@@ -8,15 +8,34 @@ Start here::
     for user in session.list_users().users:
         print(user.user_id, user.email)
 
-This release covers the connection, both signing schemes, and EAM. The other modules - EQS, ESM,
-ENS, EKM, ESS and the rest - speak the same protocol through the same client, and are not wrapped
-yet; :meth:`euclid.modules.eam.EuclidSession.call` reaches any EAM action this SDK does not name.
+This release covers the connection, both signing schemes, EAM, and the five modules an application
+spends its time in - ESM (storage), EQS (queues), ENS (topics), EKM (keys) and ESS (secrets), each
+reached from the session the login returns::
+
+    session = Euclid.for_server(url).login("jens", "secret")
+
+    session.esm().upload_file(bucket_ern, "2026/q3.pdf", "q3.pdf")
+    session.eqs().send_message(queue_ern, '{"order": 17}')
+    session.ens().publish_message(topic_ern, '{"order": 17}')
+    session.ekm().encrypt(key_id, b"account 4711")
+    session.ess().get_secret("db-password").value
+
+The remaining modules - EES, EAP, ETS, EMO - speak the same protocol through the same client and
+are not wrapped yet; each client's ``call(action, payload)`` reaches an action this SDK does not
+name, and :class:`euclid.modules.ModuleClient` is what a module of one's own is built on.
 """
 
 from .auth import SignableRequest, SigningScheme
+from .dto.com import Variant
 from .exceptions import EuclidAuthenticationError, EuclidError, EuclidServiceError
 from .http import EuclidHttpClient, Response
+from .modules.base import ModuleClient
 from .modules.eam import AUTH_AUTO, AUTH_BEARER, AUTH_SIGNATURE, EuclidEam, EuclidSession
+from .modules.ekm import EuclidEkm
+from .modules.ens import EuclidEns
+from .modules.eqs import EuclidEqs
+from .modules.esm import EuclidEsm, parse_bucket_event
+from .modules.ess import EuclidEss
 
 __version__ = "0.1.0"
 
@@ -24,10 +43,18 @@ __all__ = [
     "Euclid",
     "EuclidEam",
     "EuclidSession",
+    "EuclidEsm",
+    "EuclidEqs",
+    "EuclidEns",
+    "EuclidEkm",
+    "EuclidEss",
+    "ModuleClient",
     "EuclidHttpClient",
     "Response",
     "SigningScheme",
     "SignableRequest",
+    "Variant",
+    "parse_bucket_event",
     "EuclidError",
     "EuclidAuthenticationError",
     "EuclidServiceError",
@@ -41,9 +68,10 @@ __all__ = [
 class Euclid:
     """Entry point: names a server, and hands out the module clients for it.
 
-    Exists so that a caller writes the server's URL once. Today there is one module behind it;
-    the point of the indirection is that ``euclid.eqs()`` and the rest arrive without the calling
-    code changing shape.
+    Exists so that a caller writes the server's URL once. Only EAM is reached from here, because
+    only EAM is reached before logging in; every other module hangs off the session that login
+    returns - :meth:`~euclid.modules.eam.EuclidSession.esm` today, ``eqs()`` and the rest as they
+    arrive.
     """
 
     __slots__ = ("_base_url",)

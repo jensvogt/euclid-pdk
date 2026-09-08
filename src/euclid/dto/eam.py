@@ -14,6 +14,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# Aliased rather than imported under their own names so that the parsing below reads as it did when
+# these lived here: they moved to be shared with the other modules' response types, not to change.
+from ._json import flag as _flag
+from ._json import number as _number
+from ._json import strings as _strings
+from ._json import text as _text
+
 __all__ = [
     "Metadata",
     "AccessKey",
@@ -29,35 +36,6 @@ __all__ = [
     "ListNamespacesResult",
     "CreateAccessKeyResult",
 ]
-
-
-def _text(document: Any, name: str) -> str:
-    """A string field, empty when absent or null."""
-    if not isinstance(document, dict):
-        return ""
-    value = document.get(name)
-    return value if isinstance(value, str) else ""
-
-
-def _flag(document: Any, name: str, default: bool = False) -> bool:
-    if not isinstance(document, dict):
-        return default
-    value = document.get(name)
-    return value if isinstance(value, bool) else default
-
-
-def _number(document: Any, name: str) -> int:
-    if not isinstance(document, dict):
-        return 0
-    value = document.get(name)
-    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
-
-
-def _strings(document: Any, name: str) -> list[str]:
-    if not isinstance(document, dict):
-        return []
-    values = document.get(name)
-    return [v for v in values if isinstance(v, str)] if isinstance(values, list) else []
 
 
 @dataclass

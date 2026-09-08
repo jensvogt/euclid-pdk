@@ -82,9 +82,13 @@ class FakeGateway:
                 self._respond(status, payload)
 
             def _respond(self, status: int, payload: Any) -> None:
-                encoded = json.dumps(payload).encode("utf-8")
+                # Bytes are answered as bytes: ESM's get-object and download-part hand back an
+                # object's contents rather than a description of it, and a client that decoded
+                # those as JSON would be tested against a server that does not exist.
+                binary = isinstance(payload, (bytes, bytearray))
+                encoded = bytes(payload) if binary else json.dumps(payload).encode("utf-8")
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", "application/octet-stream" if binary else "application/json")
                 self.send_header("Content-Length", str(len(encoded)))
                 self.end_headers()
                 self.wfile.write(encoded)

@@ -1,0 +1,249 @@
+"""ENS, end to end against a fake euclid server.
+
+Topics have no receive and no lease, so there is nothing here that needs a stateful stand-in the way
+EQS's long poll does: every action is one request, and what these check is that it carries the
+fields the server reads and parses the ones it answers with.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from euclid import Euclid, EuclidServiceError, Variant
+from euclid.dto.com import PRIORITY_HIGH
+from euclid.modules import ens as ens_module
+from fake_queues import queue_ern
+from test_eam import prepared
+
+TOPIC = "ern:euclid:ens:eu-central-1:000000000000:topic/order-events"
+QUEUE = queue_ern("orders")
+
+
+@pytest.fixture
+def ens(gateway):
+    """An ENS client on a logged-in session, closed with it."""
+    prepared(gateway)
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        yield session.ens()
+
+
+# -- topics ------------------------------------------------------------------------------------
+
+
+def test_create_and_list_topics(gateway, ens):
+    gateway.answer("ens", "create-topic", {"name": "order-events", "ern": TOPIC})
+    gateway.answer("ens", "list-topics", {"total": 2, "topics": [
+        {"name": "order-events", "ern": TOPIC, "owner": "jens", "tags": {"team": "sales"},
+         "size": 4096, "messages": 12, "maxMessageLength": 262144, "created": "2026-01-01"},
+        {"name": "audit"},
+    ]})
+
+    created = ens.create_topic("order-events", max_message_length=262144)
+    assert (created.name, created.ern) == ("order-events", TOPIC)
+    assert gateway.last().json() == {"name": "order-events", "maxMessageLength": 262144}
+
+    listed = ens.list_topics(prefix="order", page_size=25, sort_direction="desc")
+    assert gateway.last().json() == {"prefix": "order", "pageSize": 25, "pageIndex": 0,
+                                     "sortColumn": "name", "sortDirection": "desc"}
+    assert listed.total == 2
+    assert [topic.name for topic in listed.topics] == ["order-events", "audit"]
+    assert listed.topics[0].tags == {"team": "sales"} and listed.topics[0].messages == 12
+    # A field the server did not send reads as empty rather than raising.
+    assert listed.topics[1].owner == "" and listed.topics[1].max_message_length == 0
+
+
+def test_topic_ern_metadata_and_tags(gateway, ens):
+    gateway.answer("ens", "get-topic-ern", {"name": "order-events", "ern": TOPIC})
+    gateway.answer("ens", "get-topic-metadata", {"region": "eu-central-1", "accountId": "000000000000",
+                                                 "owner": "jens", "nameSpace": "development",
+                                                 "name": "order-events", "ern": TOPIC, "size": 4096,
+                                                 "messages": 12})
+    gateway.answer("ens", "add-topic-tag", {})
+    gateway.answer("ens", "set-topic-tag", {})
+    gateway.answer("ens", "delete-topic-tag", {})
+
+    assert ens.get_topic_ern("order-events") == TOPIC
+    assert gateway.last().json() == {"name": "order-events"}
+
+    metadata = ens.get_topic_metadata(TOPIC)
+    assert (metadata.namespace, metadata.messages, metadata.size) == ("development", 12, 4096)
+
+    ens.add_topic_tag(TOPIC, "team", "sales")
+    assert gateway.last().json() == {"ern": TOPIC, "key": "team", "value": "sales"}
+    ens.set_topic_tag(TOPIC, "team", "ops")
+    ens.delete_topic_tag(TOPIC, "team")
+    assert gateway.last().json() == {"ern": TOPIC, "key": "team"}
+
+
+def test_purging_and_deleting(gateway, ens):
+    gateway.answer("ens", "purge-topic", {})
+    gateway.answer("ens", "purge-all-topics", {})
+    gateway.answer("ens", "delete-topic", {})
+
+    ens.purge_topic(TOPIC)
+    assert gateway.last().json() == {"ern": TOPIC}
+
+    # Defaults to the session's own account, region and namespace.
+    ens.purge_all_topics()
+    assert gateway.last().json() == {"region": "eu-central-1", "accountId": "000000000000",
+                                     "nameSpace": ""}
+
+    ens.delete_topic(TOPIC)
+    assert gateway.last().action == "delete-topic"
+
+
+# -- messages ------------------------------------------------------------------------------------
+
+
+def test_publishing_returns_the_id_the_server_gave_the_message(gateway, ens):
+    gateway.answer("ens", "publish-message", {"messageId": "message-1"})
+
+    message_id = ens.publish_message(TOPIC, '{"order": 17}', attributes={"tenant": "acme", "retries": 3},
+                                     priority=PRIORITY_HIGH)
+
+    assert message_id == "message-1"
+    assert gateway.last().json() == {
+        "ern": TOPIC, "body": '{"order": 17}', "priority": "HIGH",
+        "attributes": {"tenant": {"type": "string", "value": "acme"},
+                       "retries": {"type": "long", "value": 3}}}
+
+
+def test_publishing_without_a_priority_leaves_the_field_out(gateway, ens):
+    """So the topic's own default applies rather than an empty string the server would refuse."""
+    gateway.answer("ens", "publish-message", {"messageId": "message-1"})
+
+    ens.publish_message(TOPIC, "body")
+
+    assert gateway.last().json() == {"ern": TOPIC, "body": "body", "attributes": {}}
+
+
+def test_listing_a_topics_messages(gateway, ens):
+    gateway.answer("ens", "list-messages", {"total": 1, "messages": [
+        {"ern": f"{TOPIC}/message/1", "topicErn": TOPIC, "messageId": "message-1", "status": "SENT",
+         "body": '{"order": 17}', "contentType": "application/json",
+         "attributes": {"tenant": {"type": "string", "value": "acme"}},
+         "created": "2026-01-01"}]})
+
+    listed = ens.list_messages(TOPIC, page_size=50)
+
+    assert gateway.last().json() == {"topicErn": TOPIC, "pageSize": 50, "pageIndex": 0,
+                                     "sortColumn": "created", "sortDirection": "asc"}
+    assert listed.total == 1
+    assert listed.messages[0].topic_ern == TOPIC
+    assert listed.messages[0].attributes["tenant"] == Variant("string", "acme")
+
+
+def test_a_topics_counters_are_not_a_queues(gateway, ens):
+    """A topic does not hold a backlog, so it counts delivery: what is on it, what went out, and
+    what had to go out again."""
+    gateway.answer("ens", "get-message-count", {"ern": TOPIC, "available": 12, "send": 30, "resend": 2})
+
+    count = ens.get_message_count(TOPIC)
+
+    assert (count.available, count.send, count.resend) == (12, 30, 2)
+
+
+def test_message_attributes_travel_under_the_key_ens_uses(gateway, ens):
+    """``key`` throughout ENS, where EQS mostly says ``name`` - the server's own asymmetry."""
+    gateway.answer("ens", "get-message-attribute", {"messageId": "message-1", "key": "tenant",
+                                                    "value": {"type": "string", "value": "acme"}})
+    gateway.answer("ens", "set-message-attribute", {"messageId": "message-1", "key": "retries",
+                                                    "value": {"type": "long", "value": 3}})
+
+    attribute = ens.get_message_attribute("message-1", "tenant")
+    assert gateway.last().json() == {"messageId": "message-1", "key": "tenant"}
+    assert (attribute.key, attribute.value) == ("tenant", Variant("string", "acme"))
+
+    updated = ens.set_message_attribute("message-1", "retries", 3)
+    assert gateway.last().json() == {"messageId": "message-1", "key": "retries",
+                                     "value": {"type": "long", "value": 3}}
+    assert updated.value == Variant("long", 3)
+
+
+# -- subscriptions ----------------------------------------------------------------------------------
+
+
+def test_subscribing_a_queue_to_a_topic(gateway, ens):
+    gateway.answer("ens", "subscribe", {"ern": "ern:ens:subscription/1", "sourceErn": TOPIC,
+                                        "type": "SQS", "targetErn": QUEUE})
+    gateway.answer("ens", "list-subscriptions", {"total": 1, "subscriptions": [
+        {"ern": "ern:ens:subscription/1", "sourceErn": TOPIC, "type": "SQS", "targetErn": QUEUE,
+         "created": "2026-01-01"}]})
+    gateway.answer("ens", "unsubscribe", {})
+
+    created = ens.subscribe(TOPIC, QUEUE)
+
+    assert gateway.last().json() == {"sourceErn": TOPIC, "type": "SQS", "targetErn": QUEUE}
+    assert created.target_ern == QUEUE
+
+    assert [s.target_ern for s in ens.list_subscriptions(TOPIC)] == [QUEUE]
+    assert gateway.last().json() == {"topicErn": TOPIC}
+
+    # The subscription's own ERN, not the topic's and not the queue's.
+    ens.unsubscribe(created.ern)
+    assert gateway.last().json() == {"ern": "ern:ens:subscription/1"}
+
+
+def test_the_delivery_protocol_can_be_named(gateway, ens):
+    gateway.answer("ens", "subscribe", {"ern": "ern:ens:subscription/1", "type": "SQS"})
+
+    ens.subscribe(TOPIC, QUEUE, target_type=ens_module.QUEUE)
+
+    assert gateway.last().json()["type"] == "SQS"
+
+
+# -- everything else ----------------------------------------------------------------------------------
+
+
+def test_ens_is_signed_and_follows_the_session(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "change-namespace", {})
+    gateway.answer("ens", "get-topic-ern", {"ern": TOPIC})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        ens = session.ens()
+        ens.get_topic_ern("order-events")
+        assert gateway.last().auth == "sigv4"
+        assert gateway.last().headers["x-euclid-target"] == "ens"
+
+        session.change_namespace("development")
+        ens.get_topic_ern("order-events")
+        assert gateway.last().headers["x-euclid-namespace"] == "development"
+
+        assert session.ens() is ens
+
+
+def test_the_modules_of_one_session_are_separate_clients(gateway):
+    """Three modules, three clients, one session - and one call each proves they route to their own
+    target rather than to whichever was asked for first."""
+    prepared(gateway)
+    gateway.answer("ens", "get-topic-ern", {"ern": TOPIC})
+    gateway.answer("eqs", "get-queue-ern", {"ern": QUEUE})
+    gateway.answer("esm", "get-bucket-ern", {"ern": "ern:esm:bucket/reports"})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        session.ens().get_topic_ern("order-events")
+        session.eqs().get_queue_ern("orders")
+        session.esm().get_bucket_ern("reports")
+
+    assert [r.target for r in gateway.requests if r.target != "eam"] == ["ens", "eqs", "esm"]
+    # Each signed for its own module: the target is signed, so a client signing for another one
+    # would have been refused by the gateway rather than answered.
+    assert {r.auth for r in gateway.requests if r.target != "eam"} == {"sigv4"}
+
+
+def test_a_refusal_carries_the_servers_reason(gateway, ens):
+    gateway.answer("ens", "publish-message", {"error": "Message too long"}, status=400)
+
+    with pytest.raises(EuclidServiceError) as raised:
+        ens.publish_message(TOPIC, "x" * 10)
+
+    assert (raised.value.target, raised.value.action, raised.value.status) == ("ens", "publish-message", 400)
+    assert raised.value.reason == "Message too long"
+
+
+def test_call_reaches_an_ens_action_this_sdk_does_not_wrap(gateway, ens):
+    gateway.answer("ens", "some-future-action", {"ok": True})
+
+    assert ens.call("some-future-action", {"x": 1}) == {"ok": True}
+    assert gateway.last().json() == {"x": 1}

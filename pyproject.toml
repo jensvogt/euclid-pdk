@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Dr. Jens Vogt", email = "jensvogt47@gmail.com" }]
-keywords = ["euclid", "sdk", "eam", "sigv4", "rfc9421"]
+keywords = ["euclid", "sdk", "eam", "esm", "eqs", "ens", "ekm", "ess", "object-storage",
+            "message-queue", "secrets", "sigv4", "rfc9421"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

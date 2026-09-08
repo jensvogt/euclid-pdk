@@ -14,7 +14,7 @@ that means one thing before login and another after.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from ..auth import SignableRequest, SigningScheme
 from ..credentials import CachedCredentials, is_token_valid
@@ -26,6 +26,13 @@ from ..dto.eam import (AccessKey, Account, CreateAccessKeyResult, ListAccountsRe
 from ..exceptions import EuclidAuthenticationError, EuclidServiceError
 from ..http.client import DEFAULT_CA_CERT_PATH, DEFAULT_TIMEOUT, EuclidHttpClient
 from ..url import authority_of, host_header_of, scheme_of, strip_trailing_slash
+
+if TYPE_CHECKING:  # pragma: no cover - the runtime imports are inside the methods that need them
+    from .ekm import EuclidEkm
+    from .ens import EuclidEns
+    from .eqs import EuclidEqs
+    from .esm import EuclidEsm
+    from .ess import EuclidEss
 
 __all__ = ["EuclidEam", "EuclidSession", "TARGET"]
 
@@ -267,7 +274,13 @@ class EuclidSession:
         self._cache = cache
         self._host_header = host_header_of(base_url)
         self._scheme = scheme_of(base_url)
-        self._client = EuclidHttpClient(ca_cert_path, timeout, verify).header_factory(self._auth_headers)
+        # Kept so that a module client this session hands out - see :meth:`esm` - reaches the same
+        # server on the same terms, rather than having to be told the connection settings again.
+        self._ca_cert_path = ca_cert_path
+        self._timeout = timeout
+        self._verify = verify
+        self._modules: dict[str, Any] = {}
+        self._client = self.new_client(lambda action, body: self.auth_headers(TARGET, action, body))
 
     # -- identity ----------------------------------------------------------------------------
 
@@ -283,8 +296,10 @@ class EuclidSession:
             is_admin=self.is_admin, base_url=self.base_url, namespace=self.namespace or "")
 
     def close(self) -> None:
-        """Releases the connection this session was holding."""
+        """Releases the connections this session was holding, its module clients' included."""
         self._client.close()
+        for module in self._modules.values():
+            module.close()
 
     def __enter__(self) -> "EuclidSession":
         return self
@@ -442,19 +457,24 @@ class EuclidSession:
               timeout: float | None = None) -> dict[str, Any]:
         body = json.dumps(dict(payload) if payload else {}).encode("utf-8")
         response = self._client.post(self.base_url + "/", body, TARGET, action,
-                                     self._request_headers(action, body), timeout)
+                                     self.request_headers(TARGET, action, body), timeout)
         if not response.ok:
             raise EuclidServiceError(TARGET, action, response.status, response.text)
         result = response.json()
         return result if isinstance(result, dict) else {"result": result}
 
-    def _request_headers(self, action: str, body: bytes) -> dict[str, str]:
-        """Every header the request goes out with, signature included."""
-        headers = self._routing_headers()
-        headers.update(self._auth_headers(action, body))
+    def request_headers(self, target: str, action: str, body: bytes) -> dict[str, str]:
+        """Every header a request to one of this session's modules goes out with, signature included.
+
+        Takes the target rather than assuming EAM because the target is signed: a client for
+        another module - :meth:`esm` - has to sign for *its* module, and signing here rather than
+        in each module client is what keeps one implementation of how this session authenticates.
+        """
+        headers = self.routing_headers()
+        headers.update(self.auth_headers(target, action, body))
         return headers
 
-    def _routing_headers(self) -> dict[str, str]:
+    def routing_headers(self) -> dict[str, str]:
         """Who is asking and what they are scoped to. Signed, apart from the namespace."""
         headers = {"Content-Type": "application/json", "Host": self._host_header}
         if self.region:
@@ -468,7 +488,7 @@ class EuclidSession:
             headers["x-euclid-namespace"] = self.namespace
         return headers
 
-    def _auth_headers(self, action: str, body: bytes) -> dict[str, str]:
+    def auth_headers(self, target: str, action: str, body: bytes) -> dict[str, str]:
         """The authentication headers alone, rebuilt per request.
 
         Rebuilt rather than cached because a signature is only valid around the moment it was made,
@@ -477,15 +497,80 @@ class EuclidSession:
         """
         if self._should_sign():
             request = SignableRequest("POST", "/")
-            request.headers_from(self._routing_headers())
-            request.header("x-euclid-target", TARGET)
+            request.headers_from(self.routing_headers())
+            request.header("x-euclid-target", target)
             request.header("x-euclid-action", action)
             request.set_body(body)
             request.set_scheme(self._scheme)
             self.signing_scheme.sign(request, self.access_key_id, self.secret_access_key,
-                                     self.region, TARGET)
+                                     self.region, target)
             return {name: request.get(name) for name in self.signing_scheme.signature_header_names()}
+        return self.bearer_headers()
+
+    def bearer_headers(self) -> dict[str, str]:
+        """The bearer token, presented as an ``Authorization`` header.
+
+        Its own method because a request is not always free to sign: ESM's byte-carrying actions
+        present the token whatever this session would otherwise do - see
+        :class:`euclid.modules.esm.EuclidEsm`.
+        """
         return {"Authorization": "Bearer " + self.current_token()}
+
+    def new_client(self, header_factory: Callable[[str, bytes], dict[str, str]]) -> EuclidHttpClient:
+        """A connection to this session's server, on the TLS and timeout settings it logged in with.
+
+        The factory is what a request whose credentials expired in flight is rebuilt with, so a
+        module client passes the one that rebuilds *its* headers - see :meth:`auth_headers`.
+        """
+        client = EuclidHttpClient(self._ca_cert_path, self._timeout, self._verify)
+        return client.header_factory(header_factory)
+
+    def esm(self) -> "EuclidEsm":
+        """ESM - euclid's storage module - on this session's credentials."""
+        from .esm import EuclidEsm
+
+        return self._module("esm", EuclidEsm)
+
+    def eqs(self) -> "EuclidEqs":
+        """EQS - euclid's queue module - on this session's credentials."""
+        from .eqs import EuclidEqs
+
+        return self._module("eqs", EuclidEqs)
+
+    def ens(self) -> "EuclidEns":
+        """ENS - euclid's notification module - on this session's credentials."""
+        from .ens import EuclidEns
+
+        return self._module("ens", EuclidEns)
+
+    def ekm(self) -> "EuclidEkm":
+        """EKM - euclid's key management module - on this session's credentials."""
+        from .ekm import EuclidEkm
+
+        return self._module("ekm", EuclidEkm)
+
+    def ess(self) -> "EuclidEss":
+        """ESS - euclid's secret store - on this session's credentials."""
+        from .ess import EuclidEss
+
+        return self._module("ess", EuclidEss)
+
+    def _module(self, name: str, factory: Callable[["EuclidSession"], Any]) -> Any:
+        """The one client this session has for a module, built the first time it is asked for.
+
+        One per module rather than one per call, so an application that reaches for
+        ``session.eqs()`` inside a loop pays for one connection rather than one per iteration. Each
+        follows this session: a :meth:`change_namespace` between two calls scopes the second one,
+        and a :attr:`token_provider` set here is the token they present.
+
+        The imports are inside the methods above rather than at module scope because each module
+        client needs this module for the session it is built from, and one side of the cycle has to
+        be the late one.
+        """
+        client = self._modules.get(name)
+        if client is None:
+            client = self._modules[name] = factory(self)
+        return client
 
     def current_token(self) -> str:
         """The bearer token to present now - :attr:`token_provider`'s, or :attr:`token`."""
