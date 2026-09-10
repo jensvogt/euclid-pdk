@@ -644,6 +644,28 @@ transfer a stubbed test cannot see is exactly the part that corrupts an object, 
 server always answers immediately cannot tell a client that abandons a long poll from one that
 does not.
 
+### Releasing
+
+Bump `version` in `pyproject.toml` and `__version__` in `src/euclid/__init__.py` - they have to
+agree, and `.github/workflows/publish.yml` refuses to publish if they and the tag do not - then tag
+and push:
+
+```bash
+git tag -a v0.3.0 -m "euclid-pdk 0.3.0"
+git push origin main v0.3.0
+```
+
+The tag runs the tests again (the test workflow triggers on branches, so a tag push would otherwise
+run nothing), builds the wheel and the sdist, checks them with `twine check --strict`, and uploads
+to PyPI. `workflow_dispatch` does the same for whatever `main` says, which is what a version whose
+tag predates this workflow needs.
+
+Publishing uses PyPI's trusted publishing rather than an API token: PyPI verifies the workflow's
+own OIDC identity, so there is no secret to rotate or leak. It has to be configured once, under the
+project's *Publishing* settings on PyPI - owner `jensvogt`, repository `euclid-pdk`, workflow
+`publish.yml`, environment `pypi` - and for a project that does not exist there yet, as a pending
+publisher.
+
 ## Licence
 
 Apache License 2.0.

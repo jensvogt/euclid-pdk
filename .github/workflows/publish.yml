@@ -1,0 +1,81 @@
+name: publish
+
+# Pushing a v* tag publishes that version to PyPI. The manual trigger builds and publishes whatever
+# main says, which is what the first release after this workflow lands needs: a workflow only runs
+# for a tag if it already existed at that tag's commit.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A tag push does not run the test workflow - that one triggers on branches - so the tests
+      # run here too. Publishing something that was never tested is the one mistake this workflow
+      # could make that nobody can take back: a version number on PyPI is spent for good.
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
+
+      # The tag is what somebody reads; the version in pyproject.toml is what the artifact is named
+      # after. If they disagree, "pip install euclid-pdk==0.2.0" and the v0.2.0 tag are different
+      # code, and the tag is the one nobody can check afterwards.
+      - name: Check the tag against the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(python -c 'import tomllib, pathlib;
+          print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME says $tagged, pyproject.toml says $declared" >&2
+            exit 1
+          fi
+          echo "both say $declared"
+
+      - name: Build
+        run: |
+          pip install build twine
+          python -m build
+
+      # Checks the metadata PyPI will reject on upload rather than after it - a long_description
+      # that does not render is a rejection, and finding that out here costs nothing.
+      - name: Check the distributions
+        run: twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    # Trusted publishing: PyPI verifies this workflow's OIDC identity instead of holding an API
+    # token that would have to be rotated and could be stolen. It needs a publisher configured at
+    # https://pypi.org/manage/project/euclid-pdk/settings/publishing - owner jensvogt, repository
+    # euclid-pdk, workflow publish.yml, environment pypi - and nothing else here.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/euclid-pdk
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
