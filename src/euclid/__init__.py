@@ -8,20 +8,26 @@ Start here::
     for user in session.list_users().users:
         print(user.user_id, user.email)
 
-This release covers the connection, both signing schemes, EAM, and the five modules an application
-spends its time in - ESM (storage), EQS (queues), ENS (topics), EKM (keys) and ESS (secrets), each
-reached from the session the login returns::
+This release covers the connection, both signing schemes, EAM, and the ten modules an application
+spends its time in - ESM (storage), EQS (queues), ENS (topics), EES (events), EKM (keys), ESS
+(secrets), EKV (key-value tables), EAG (the API gateway), EAP (the applications behind it) and ETS
+(FTP and SFTP onto a bucket), each reached from the session the login returns::
 
     session = Euclid.for_server(url).login("jens", "secret")
 
     session.esm().upload_file(bucket_ern, "2026/q3.pdf", "q3.pdf")
     session.eqs().send_message(queue_ern, '{"order": 17}')
     session.ens().publish_message(topic_ern, '{"order": 17}')
+    session.ees().receive_events("invoice-indexer", wait_time=20)
     session.ekm().encrypt(key_id, b"account 4711")
     session.ess().get_secret("db-password").value
+    session.ekv().get_item("sessions", {"userId": "jens"})
+    session.eap().start_application("order-service")
+    session.eag().create_route("orders", "/api/orders", "order-service")
+    session.ets().start_server("partner-drop")
 
-The remaining modules - EES, EAP, ETS, EMO - speak the same protocol through the same client and
-are not wrapped yet; each client's ``call(action, payload)`` reaches an action this SDK does not
+The remaining modules - EMO, EMM, EMD and the rest - speak the same protocol through the same client
+and are not wrapped yet; each client's ``call(action, payload)`` reaches an action this SDK does not
 name, and :class:`euclid.modules.ModuleClient` is what a module of one's own is built on.
 """
 
@@ -30,12 +36,17 @@ from .dto.com import Variant
 from .exceptions import EuclidAuthenticationError, EuclidError, EuclidServiceError
 from .http import EuclidHttpClient, Response
 from .modules.base import ModuleClient
+from .modules.eag import EuclidEag
 from .modules.eam import AUTH_AUTO, AUTH_BEARER, AUTH_SIGNATURE, EuclidEam, EuclidSession
+from .modules.eap import EuclidEap
+from .modules.ees import EuclidEes
 from .modules.ekm import EuclidEkm
+from .modules.ekv import EuclidEkv
 from .modules.ens import EuclidEns
 from .modules.eqs import EuclidEqs
 from .modules.esm import EuclidEsm, parse_bucket_event
 from .modules.ess import EuclidEss
+from .modules.ets import EuclidEts
 
 __version__ = "0.1.0"
 
@@ -48,6 +59,11 @@ __all__ = [
     "EuclidEns",
     "EuclidEkm",
     "EuclidEss",
+    "EuclidEkv",
+    "EuclidEag",
+    "EuclidEap",
+    "EuclidEes",
+    "EuclidEts",
     "ModuleClient",
     "EuclidHttpClient",
     "Response",

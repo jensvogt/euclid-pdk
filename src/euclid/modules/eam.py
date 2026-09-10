@@ -28,11 +28,16 @@ from ..http.client import DEFAULT_CA_CERT_PATH, DEFAULT_TIMEOUT, EuclidHttpClien
 from ..url import authority_of, host_header_of, scheme_of, strip_trailing_slash
 
 if TYPE_CHECKING:  # pragma: no cover - the runtime imports are inside the methods that need them
+    from .eag import EuclidEag
+    from .eap import EuclidEap
+    from .ees import EuclidEes
     from .ekm import EuclidEkm
+    from .ekv import EuclidEkv
     from .ens import EuclidEns
     from .eqs import EuclidEqs
     from .esm import EuclidEsm
     from .ess import EuclidEss
+    from .ets import EuclidEts
 
 __all__ = ["EuclidEam", "EuclidSession", "TARGET"]
 
@@ -554,6 +559,36 @@ class EuclidSession:
         from .ess import EuclidEss
 
         return self._module("ess", EuclidEss)
+
+    def ekv(self) -> "EuclidEkv":
+        """EKV - euclid's key-value store - on this session's credentials."""
+        from .ekv import EuclidEkv
+
+        return self._module("ekv", EuclidEkv)
+
+    def eag(self) -> "EuclidEag":
+        """EAG - euclid's API gateway - on this session's credentials."""
+        from .eag import EuclidEag
+
+        return self._module("eag", EuclidEag)
+
+    def eap(self) -> "EuclidEap":
+        """EAP - euclid's application platform - on this session's credentials."""
+        from .eap import EuclidEap
+
+        return self._module("eap", EuclidEap)
+
+    def ees(self) -> "EuclidEes":
+        """EES - euclid's event service - on this session's credentials."""
+        from .ees import EuclidEes
+
+        return self._module("ees", EuclidEes)
+
+    def ets(self) -> "EuclidEts":
+        """ETS - euclid's transfer service - on this session's credentials."""
+        from .ets import EuclidEts
+
+        return self._module("ets", EuclidEts)
 
     def _module(self, name: str, factory: Callable[["EuclidSession"], Any]) -> Any:
         """The one client this session has for a module, built the first time it is asked for.

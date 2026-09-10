@@ -3,9 +3,11 @@
 Python client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
 It covers the three things everything else needs - the connection, request signing, and EAM,
-euclid's access management module - and the five modules an application spends its time in: ESM
-(storage), EQS (queues), ENS (topics), EKM (keys) and ESS (secrets). The remaining modules (EES,
-EAP, ETS, EMO) speak the same protocol over the same client and will follow.
+euclid's access management module - and the ten modules an application spends its time in: ESM
+(storage), EQS (queues), ENS (topics), EES (events), EKM (keys), ESS (secrets), EKV (key-value
+tables), EAG (the API gateway), EAP (the applications behind it) and ETS (FTP and SFTP onto a
+bucket). The remaining modules (EMO, EMM, EMD and the rest) speak the same protocol over the same
+client and will follow.
 
 Requires Python 3.10 or newer, and **has no dependencies**. Installing this SDK does not bring a
 TLS stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and
@@ -285,6 +287,57 @@ Two field names are the server's own asymmetry rather than a typo here: a messag
 as `key` throughout ENS and as `name` in most of EQS, and this SDK reproduces both rather than
 papering over either, so a request built from this documentation matches what euclid-cli sends.
 
+## What EES covers
+
+`session.ees()` returns the event client — euclid's event bus, for consumers that are not euclid
+modules.
+
+| Method | Action |
+| --- | --- |
+| `subscribe_events`, `unsubscribe_events`, `list_subscriptions` | what a name is interested in |
+| `receive_events`, `ack_event`, `ack_events` | claiming events and deleting them |
+| `metrics` | EES's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+A subscriber registers a durable *name* and pulls. Nothing is pushed and no queue has to be created:
+`receive_events` claims what is waiting and `ack_events` deletes it, and an event claimed but never
+acknowledged becomes claimable again when its visibility timeout runs out — so a consumer that dies
+mid-work loses nothing, and the acknowledgement belongs after the work rather than before it.
+
+The name decides fan-out. Two *instances* of one application share a name and compete for each
+event; two *different* applications use different names and each get their own copy.
+
+```python
+from euclid.modules.ees import OBJECT_CREATED
+
+ees.subscribe_events("invoice-indexer", [OBJECT_CREATED], {"prefix": "invoices/2026/"})
+
+while True:
+    for event in ees.receive_events("invoice-indexer", wait_time=20).events:
+        index(event["bucketErn"], event["key"])       # an Event reads its payload like a mapping
+        ees.ack_event("invoice-indexer", event.event_id)
+```
+
+The filter is evaluated where the event is published rather than where it is read, so a subscriber
+accumulates what it asked for rather than everything of that type in the installation. ESM's object
+events — `OBJECT_CREATED`, `OBJECT_UPDATED`, `OBJECT_DELETED` — carry a flat payload of strings,
+numbers and booleans precisely so a filter can match it by equality: `{"bucketErn": ...}` for one
+bucket, `{"prefix": "invoices/2026/"}` for one "directory" (a key is a path by convention only, and
+`prefix` is that convention spelled out by the server rather than by every subscriber), and
+`{"directory": False}` to skip directory markers.
+
+An event's `payload` and a subscription's `filter` stay plain dictionaries. Their shape belongs to
+the event type, so parsing them would mean this SDK knowing what every module publishes — and going
+out of date the first time one of them adds a field.
+
+`receive_events` long-polls, with a request timeout of its own; `wait_time` is clamped by the server
+to 20 seconds, and a server with no long-poll slot free answers at once with whatever is there,
+which a consumer loop simply asks about again.
+
+This is the richer, server-side-filtered path. ESM's own `subscribe` puts a notification into a
+queue or topic instead — see `parse_bucket_event` — and the `esm.subscription.*` events are the
+plumbing behind it rather than something to subscribe to.
+
 ## What EKM covers
 
 `session.ekm()` returns the key client.
@@ -354,6 +407,200 @@ ess.rotate_secret("db-password", new_password)         # bumps version, records 
 leaving `description` as `None` leaves the stored one alone, while passing `""` clears it - and the
 same for `value`, since an empty string is a value somebody may legitimately store. An update that
 names none of the three raises `ValueError` here rather than costing a round trip to be refused.
+
+## What EKV covers
+
+`session.ekv()` returns the key-value client.
+
+| Method | Action |
+| --- | --- |
+| `create_table`, `describe_table`, `list_tables`, `delete_table` | tables |
+| `put_item`, `get_item`, `find_item`, `delete_item` | items, one at a time |
+| `query` | the items of one partition, in sort-key order |
+| `scan` | a table's items without regard to their key |
+| `metrics` | EKV's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+A table is keyed on one attribute or on two: a partition key that identifies an item, and optionally
+a sort key that orders the items sharing a partition key - which is what makes a partition readable
+as a range. Both have declared types (`STRING`, `NUMBER`, `BINARY`), fixed at creation, and the type
+is what a comparison is made under: a `NUMBER` sort key orders 2, 9, 10, 100 rather than putting
+"10" before "9".
+
+An item's other attributes are free-form documents - scalars, lists, nested maps - and are not
+declared anywhere. They are also not the tagged `Variant` that EQS, ENS and ESM attributes use: EKV
+stores what JSON can express.
+
+```python
+from euclid.modules.ekv import GE, NUMBER
+
+ekv.create_table("sessions", "userId", sort_key="startedAt", sort_key_type=NUMBER)
+ekv.put_item("sessions", {"userId": "jens", "startedAt": 1757462400, "host": "laptop"})
+
+for item in ekv.query("sessions", "jens", GE, 1757462400).items:
+    print(item["host"])                       # an Item reads like a mapping
+```
+
+Three things this SDK does rather than pass straight through:
+
+* **`put_item` replaces rather than merges**, so changing one field means reading the item, changing
+  it and writing the whole thing back. `Item` therefore keeps the server's `_created` and
+  `_modified` out of `.attributes` and exposes them as `.created` and `.modified` - left in, they
+  would be written back as two attributes of the caller's own, and stick.
+* **`get_item` raises on a miss** (HTTP 404), because "there is no such item" and "here is an item
+  with nothing in it" are different. `find_item` is its miss-tolerant twin, returning `None` — 
+  `dict.get` to its `dict[...]`. Only a 404 becomes `None`; a malformed key still raises.
+* **`query` always sends `forward`**, since the server reads an absent flag as descending rather
+  than as unspecified. Asking for `BETWEEN` without both bounds raises `ValueError` here rather than
+  costing a round trip to be refused.
+
+`query` addresses a partition by key; `scan` reads the table. The second is fine for a small table
+or an export and is the wrong tool for a lookup - `ScanResult.total` says how much there is to get
+through.
+
+## What EAP covers
+
+`session.eap()` returns the application client. Administrator-only server-side, all of it.
+
+| Method | Action |
+| --- | --- |
+| `create_application`, `update_application`, `redeploy_application`, `delete_application` | deploying |
+| `start_application`, `stop_application` | running |
+| `list_applications`, `get_application` | what is deployed, and what is answering |
+| `set_log_level`, `reset_log_level` | what one application logs at |
+| `metrics` | EAP's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+An application is deployed from an artifact already in a bucket — ESM puts it there, EAP names it —
+and the deployment says which buckets and queues it may reach. euclid grants those to the identity
+it runs as: a technical principal it creates for the application unless one is named, with no
+password, no login and one access key, so nothing an application leaks is a person's credential.
+
+```python
+from euclid.modules.eap import JAVA
+
+eap.create_application("order-service", JAVA, bucket="artifacts",
+                       artifact="order-service-1.4.0.jar", queues=["orders"],
+                       min_instances=2, max_instances=5)
+eap.start_application("order-service")
+```
+
+A few things this SDK reproduces rather than smooths over:
+
+* **Deploying names things; the answer describes ERNs.** A deployment takes a `bucket` name and an
+  `artifact` key, and the `Application` that comes back has `bucket_ern` and `artifact_key`; the
+  `buckets` and `queues` granted come back resolved into `resources`. Names are what an operator has
+  in hand, ERNs are what euclid stores.
+* **`desired_state` is what was asked for and `state` is what is running.** `start_application`
+  changes the first and the manager acts on it, so the application in the answer is usually still
+  `STOPPED`. The two differing is an application starting up; the two differing for long is one that
+  cannot.
+* **`update_application` sends only what it names** — but `buckets` and `queues` are re-resolved
+  together whenever *either* is named, so the SDK leaves both out unless you pass them. Passing
+  either alone revokes what the other used to grant; passing both empty revokes everything,
+  deliberately.
+
+`redeploy_application` is what a new build of the same application usually wants: the artifact
+defaults to the one already deployed and the version to whatever the artifact's name says. A
+redeploy that would change neither the version nor the checksum is refused with HTTP 409 — it would
+restart the instances for nothing, and usually means the new artifact never reached the bucket.
+
+## What EAG covers
+
+`session.eag()` returns the API gateway client. Every action here is administrator-only
+server-side; `session.is_admin` says whether the logged-in user is one, though the server enforces
+it regardless.
+
+| Method | Action |
+| --- | --- |
+| `create_route`, `create_module_route`, `get_route`, `list_routes`, `delete_route` | routes |
+| `update_route`, `set_route_active` | changing one |
+| `list_listeners` | the ports the gateway answers on, and whether it is answering |
+| `metrics` | EAG's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+A route publishes a path prefix and says where everything beneath it goes: to an application euclid
+runs, or to one action of a euclid module. It is one or the other, never both and never neither -
+those are reached in entirely different ways, and a route naming both would leave which one wins up
+to the proxy. This SDK raises `ValueError` for that rather than costing a round trip to be refused.
+
+```python
+from euclid.modules.eag import EUCLID_AUTH
+
+eag.create_route("orders", "/api/orders", "order-service",
+                 methods=["GET", "POST"], authentication=EUCLID_AUTH)
+
+# The way in for something outside euclid that needs euclid itself.
+eag.create_module_route("login", "/euclid/login", "eam", "login")
+```
+
+Module routes are what a browser needs to log in before it can call anything: without one, a front
+end talks to the API gateway for the application and to euclid's own gateway for its credentials -
+two ports, two origins, and CORS between them.
+
+`authentication` is `NO_AUTH` (proxied as it arrives, the application enforcing whatever it
+requires), `EUCLID_AUTH` (a euclid credential — token, RFC 9421 signature or SigV4 — verified before
+anything is forwarded), or `BASIC_AUTH` (HTTP Basic against a euclid user's password, for the
+callers a euclid credential does not suit).
+
+`set_route_active(route_id, False)` is how something stops being exposed in a hurry: the route stays
+exactly as it was and comes back the same, which deleting and recreating it would not guarantee.
+`update_route` changes only what it names, and `namespace`/`region` are left out of a create
+entirely unless you name them — the server reads an empty string as the empty namespace rather than
+as "unspecified", so sending one would scope the route to nothing.
+
+`list_listeners` reports what the gateway was configured to serve and whether it is serving it. A
+listener whose port was taken, or whose certificate could not be loaded, is still listed — it is the
+one somebody is looking for — and `serving` is what says whether anything is bound. An HTTPS
+listener's certificate arrives flat, as a dozen `certificate*` fields, which the SDK gathers into
+`Listener.certificate` (or `None` where there is none to report):
+
+```python
+for listener in eag.list_listeners().listeners:
+    seal = listener.certificate
+    print(listener.port, listener.protocol,
+          "self-signed" if seal and seal.generated else "issued" if seal else "no certificate")
+```
+
+## What ETS covers
+
+`session.ets()` returns the transfer server client. Administrator-only server-side, all of it.
+
+| Method | Action |
+| --- | --- |
+| `create_server`, `update_server`, `get_server`, `list_servers`, `delete_server` | definitions |
+| `start_server`, `stop_server` | running |
+| `metrics` | ETS's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+ETS never speaks FTP or SFTP itself. It owns the definitions — which protocol, which port, which
+EAM users and groups may log in, which ESM bucket the files really live in — and starting one is
+nothing more than writing a desired state onto a definition; euclid's manager turns that into a
+running process, which reads its own definition back from here.
+
+So a file uploaded over FTP is an object in a bucket, with the events and the lifecycle every other
+object has. This is a protocol somebody's existing tooling already speaks, put in front of storage,
+rather than a second place files live.
+
+```python
+from euclid.modules.ets import SFTP
+
+ets.create_server("partner-drop", bucket="invoices", port=2222, protocol=SFTP,
+                  user_groups=["partners"], home_directory="incoming/")
+ets.start_server("partner-drop")
+```
+
+`home_directory` is the key prefix a logged-in user lands in, which is what lets one bucket serve
+several servers without either seeing the other's files. `host_key` is SFTP's, generated on first
+start when left empty — set it only to keep a key clients already trust. `pasv_min`/`pasv_max` are
+FTP's passive range, which whatever sits in front of euclid has to let through as well as the
+control port.
+
+As in EAP, `desired_state` is what was asked for and `state` is what is observed, and
+`update_server` sends only what it names — a named list replaces the stored one rather than adding
+to it. The protocol is not updatable and so is not a parameter: which one a server speaks decides
+which process runs it, so changing it would be a different server. A running server keeps running on
+its old definition until it is restarted, since the process reads it once at startup.
 
 ## Writing a module of your own
 
