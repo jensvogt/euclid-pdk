@@ -25,6 +25,8 @@ __all__ = [
     "TopicMetadata",
     "MessageCount",
     "SubscribeResult",
+    "TopicStateResult",
+    "TopicRetentionResult",
 ]
 
 
@@ -42,6 +44,12 @@ class Topic:
     size: int = 0
     messages: int = 0
     max_message_length: int = 0
+    #: ``RUNNING`` or ``STOPPED`` - see :meth:`~euclid.modules.ens.EuclidEns.stop_topic`. A stopped
+    #: topic still accepts what is published to it; it holds it rather than fanning it out.
+    status: str = ""
+    #: How long a published message is kept, in seconds. Zero means this topic has never been told
+    #: what it wants and follows the installation's default as that changes.
+    retention_period: int = 0
     created: str = ""
     modified: str = ""
 
@@ -51,6 +59,7 @@ class Topic:
             _json.text(document, "name"), _json.text(document, "owner"), _json.text(document, "ern"),
             _json.string_map(document, "tags"), _json.number(document, "size"),
             _json.number(document, "messages"), _json.number(document, "maxMessageLength"),
+            _json.text(document, "status"), _json.number(document, "retentionPeriod"),
             _json.text(document, "created"), _json.text(document, "modified"))
 
 
@@ -162,7 +171,7 @@ class MessagesResult:
 
 @dataclass
 class TopicMetadata:
-    """Where a topic lives and how much has been published to it."""
+    """Where a topic lives, how much has been published to it, and whether it is delivering."""
 
     region: str = ""
     account_id: str = ""
@@ -172,6 +181,13 @@ class TopicMetadata:
     ern: str = ""
     size: int = 0
     messages: int = 0
+    #: ``RUNNING`` or ``STOPPED``.
+    status: str = ""
+    #: How long a published message is kept, in seconds; zero follows the installation's default.
+    retention_period: int = 0
+    #: How many messages are waiting for this topic to be started again. Nothing but a stopped
+    #: topic - or one that was stopped - has any.
+    held: int = 0
 
     @staticmethod
     def from_json(document: Any) -> "TopicMetadata":
@@ -179,7 +195,8 @@ class TopicMetadata:
             _json.text(document, "region"), _json.text(document, "accountId"),
             _json.text(document, "owner"), _json.text(document, "nameSpace"),
             _json.text(document, "name"), _json.text(document, "ern"), _json.number(document, "size"),
-            _json.number(document, "messages"))
+            _json.number(document, "messages"), _json.text(document, "status"),
+            _json.number(document, "retentionPeriod"), _json.number(document, "held"))
 
 
 @dataclass
@@ -200,6 +217,38 @@ class MessageCount:
         return MessageCount(
             _json.text(document, "ern"), _json.number(document, "available"),
             _json.number(document, "send"), _json.number(document, "resend"))
+
+
+@dataclass
+class TopicStateResult:
+    """A topic after being started or stopped, and what starting it let go.
+
+    ``released`` is how many held messages were delivered to the topic's subscriptions on the way -
+    zero for a stop, and zero for a start of a topic that was never stopped. It is delivery rather
+    than a promise of it: the messages went to the subscriptions as they went out.
+    """
+
+    ern: str = ""
+    #: ``RUNNING`` or ``STOPPED``, as it now stands.
+    status: str = ""
+    released: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "TopicStateResult":
+        return TopicStateResult(_json.text(document, "ern"), _json.text(document, "status"),
+                                _json.number(document, "released"))
+
+
+@dataclass
+class TopicRetentionResult:
+    """A topic's retention period after setting it, in seconds. Zero means the installation's own."""
+
+    ern: str = ""
+    retention_period: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "TopicRetentionResult":
+        return TopicRetentionResult(_json.text(document, "ern"), _json.number(document, "retentionPeriod"))
 
 
 @dataclass

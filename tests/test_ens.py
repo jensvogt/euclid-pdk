@@ -12,6 +12,7 @@ import pytest
 from euclid import Euclid, EuclidServiceError, Variant
 from euclid.dto.com import PRIORITY_HIGH
 from euclid.modules import ens as ens_module
+from euclid.modules.ens import INSTALLATION_RETENTION, RUNNING, STOPPED
 from fake_queues import queue_ern
 from test_eam import prepared
 
@@ -73,6 +74,77 @@ def test_topic_ern_metadata_and_tags(gateway, ens):
     ens.set_topic_tag(TOPIC, "team", "ops")
     ens.delete_topic_tag(TOPIC, "team")
     assert gateway.last().json() == {"ern": TOPIC, "key": "team"}
+
+
+def test_stopping_a_topic_holds_delivery_rather_than_refusing_publishers(gateway, ens):
+    """A subscriber being redeployed is a reason to hold what arrives, not to lose it."""
+    gateway.answer("ens", "stop-topic", {"ern": TOPIC, "status": "STOPPED", "released": 0})
+
+    stopped = ens.stop_topic(TOPIC)
+
+    assert gateway.last().json() == {"ern": TOPIC}
+    assert (stopped.ern, stopped.status, stopped.released) == (TOPIC, STOPPED, 0)
+
+
+def test_starting_a_topic_delivers_what_it_held(gateway, ens):
+    """The backlog goes out as part of the call, oldest first, and the count says how much did."""
+    gateway.answer("ens", "start-topic", {"ern": TOPIC, "status": "RUNNING", "released": 137})
+
+    started = ens.start_topic(TOPIC)
+
+    assert gateway.last().json() == {"ern": TOPIC}
+    assert (started.status, started.released) == (RUNNING, 137)
+
+
+def test_starting_a_topic_that_was_never_stopped_releases_nothing(gateway, ens):
+    """Not an error: there is nothing held, so there is nothing to hand over."""
+    gateway.answer("ens", "start-topic", {"ern": TOPIC, "status": "RUNNING", "released": 0})
+
+    assert ens.start_topic(TOPIC).released == 0
+
+
+def test_a_topic_says_whether_it_is_delivering_and_how_much_is_held(gateway, ens):
+    gateway.answer("ens", "get-topic-metadata", {"region": "eu-central-1", "accountId": "000000000000",
+                                                 "owner": "jens", "nameSpace": "development",
+                                                 "name": "order-events", "ern": TOPIC, "size": 4096,
+                                                 "messages": 12, "status": "STOPPED",
+                                                 "retentionPeriod": 604800, "held": 137})
+    gateway.answer("ens", "list-topics", {"total": 1, "topics": [
+        {"name": "order-events", "ern": TOPIC, "status": "RUNNING", "retentionPeriod": 0}]})
+
+    metadata = ens.get_topic_metadata(TOPIC)
+    assert (metadata.status, metadata.held, metadata.retention_period) == (STOPPED, 137, 604800)
+
+    # And a listing carries the same two, so "which of these is stopped" is one call.
+    topic = ens.list_topics().topics[0]
+    assert topic.status == RUNNING
+    # Zero is not "no retention" but "whatever the installation says".
+    assert topic.retention_period == INSTALLATION_RETENTION
+
+
+def test_setting_how_long_a_topic_keeps_its_messages(gateway, ens):
+    """Nothing consumes a topic's messages - it is fanned out at publish time - so without this the
+    collection only grows, and every topic shares it."""
+    gateway.answer("ens", "set-topic-retention", {"ern": TOPIC, "retentionPeriod": 604800})
+
+    result = ens.set_topic_retention(TOPIC, 604800)
+
+    assert gateway.last().json() == {"ern": TOPIC, "retentionPeriod": 604800}
+    assert (result.ern, result.retention_period) == (TOPIC, 604800)
+
+
+def test_a_retention_of_zero_hands_the_topic_back_to_the_installation(gateway, ens):
+    gateway.answer("ens", "set-topic-retention", {"ern": TOPIC, "retentionPeriod": 0})
+
+    assert ens.set_topic_retention(TOPIC, INSTALLATION_RETENTION).retention_period == 0
+    assert gateway.last().json()["retentionPeriod"] == 0
+
+
+def test_a_negative_retention_says_so_before_the_round_trip(gateway, ens):
+    with pytest.raises(ValueError, match="cannot be negative"):
+        ens.set_topic_retention(TOPIC, -1)
+
+    assert [r for r in gateway.requests if r.target == "ens"] == []
 
 
 def test_purging_and_deleting(gateway, ens):

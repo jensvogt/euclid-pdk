@@ -13,6 +13,12 @@ The difference from EQS is what happens to a message once it is there. A queue h
 until a consumer takes it; a topic hands each message to every subscriber and keeps it as a record
 of having done so. So there is no receive here, and no receipt handle: a subscriber consumes from
 its own queue, which is where the message was delivered.
+
+Two things about a topic can be changed while it is in service. :meth:`~EuclidEns.stop_topic` holds
+delivery without refusing publishers - what arrives meanwhile is kept and fanned out when the topic
+is started again - which is what a subscriber being redeployed asks for. And
+:meth:`~EuclidEns.set_topic_retention` says how long a published message is kept at all, since a
+topic is fanned out at publish time and nothing else would ever remove it.
 """
 
 from __future__ import annotations
@@ -21,10 +27,12 @@ from typing import Any, Mapping
 
 from ..dto.com import Variant
 from ..dto.ens import (CreateTopicResult, ListTopicsResult, MessageAttribute, MessageCount,
-                       MessagesResult, SubscribeResult, Subscription, TopicMetadata)
+                       MessagesResult, SubscribeResult, Subscription, TopicMetadata,
+                       TopicRetentionResult, TopicStateResult)
 from .base import ModuleClient
 
-__all__ = ["EuclidEns", "TARGET", "QUEUE", "DEFAULT_MAX_MESSAGE_LENGTH"]
+__all__ = ["EuclidEns", "TARGET", "QUEUE", "DEFAULT_MAX_MESSAGE_LENGTH", "RUNNING", "STOPPED",
+           "INSTALLATION_RETENTION"]
 
 TARGET = "ens"
 
@@ -33,6 +41,15 @@ QUEUE = "SQS"
 
 #: The largest message a topic accepts, in bytes.
 DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024
+
+#: What a topic's ``status`` reads as: delivering what is published to it...
+RUNNING = "RUNNING"
+#: ...or holding it until somebody starts the topic again.
+STOPPED = "STOPPED"
+
+#: The retention period that means "whatever the installation says", rather than a number of
+#: seconds of this topic's own - see :meth:`EuclidEns.set_topic_retention`.
+INSTALLATION_RETENTION = 0
 
 
 class EuclidEns(ModuleClient):
@@ -68,8 +85,62 @@ class EuclidEns(ModuleClient):
         return self._text("get-topic-ern", {"name": name}, "ern")
 
     def get_topic_metadata(self, ern: str) -> TopicMetadata:
-        """Where a topic lives and how much has been published to it."""
+        """Where a topic lives, how much has been published to it, and whether it is delivering.
+
+        ``held`` is the useful half of a stopped topic: it says how much has piled up waiting for
+        :meth:`start_topic`, which is what decides whether starting it is a moment's work or a fan-out
+        of a fortnight's traffic.
+        """
         return TopicMetadata.from_json(self._call("get-topic-metadata", {"ern": ern}))
+
+    def stop_topic(self, ern: str) -> TopicStateResult:
+        """Stops a topic delivering, without stopping it accepting.
+
+        A stopped topic still takes what is published to it and stores it - it simply does not fan
+        it out. That is the point: a subscriber being redeployed, or a downstream system taken down
+        for the evening, is a reason to hold delivery rather than to lose what arrives meanwhile.
+        Those messages are kept and delivered oldest first when :meth:`start_topic` runs.
+
+        Nothing already delivered is affected: a message on a subscriber's queue belongs to that
+        queue, and this is about what happens next.
+        """
+        return TopicStateResult.from_json(self._call("stop-topic", {"ern": ern}))
+
+    def start_topic(self, ern: str) -> TopicStateResult:
+        """Starts a topic delivering again, and hands its subscribers everything it held.
+
+        The backlog goes out oldest first as part of this call, so a topic that collected a
+        fortnight of traffic is a fortnight of fan-out here - the result's ``released`` says how
+        many messages went. The server works a page at a time and marks each message as it goes, so
+        a start that is interrupted has delivered a prefix rather than nothing, and running it again
+        picks up where it stopped.
+
+        Starting a topic that was never stopped is not an error: there is nothing held, nothing is
+        released, and the status simply reads ``RUNNING``.
+        """
+        return TopicStateResult.from_json(self._call("start-topic", {"ern": ern}))
+
+    def set_topic_retention(self, ern: str, retention_period: int) -> TopicRetentionResult:
+        """Sets how long a message published to this topic is kept, in seconds.
+
+        Worth setting. A topic is fanned out at publish time, so nothing ever consumes its messages
+        and nothing else removes them: without a retention period the collection only grows, and
+        because every topic shares it, one busy topic is paid for by every publish in the
+        installation.
+
+        :param retention_period: seconds, or :data:`INSTALLATION_RETENTION` to follow
+            ``euclid.modules.ens.retention-period`` as it changes rather than freezing a copy of
+            whatever it says today.
+        :raises ValueError: if the period is negative, which the server refuses anyway - this just
+            says so before the round trip.
+
+        The change applies to messages published afterwards; the ones already stored keep the expiry
+        they were given, since that is stamped on each message rather than looked up when it is read.
+        """
+        if retention_period < 0:
+            raise ValueError("retention_period cannot be negative; zero follows the installation default")
+        return TopicRetentionResult.from_json(self._call("set-topic-retention", {
+            "ern": ern, "retentionPeriod": retention_period}))
 
     def purge_topic(self, ern: str) -> None:
         """Deletes every message a topic has kept, leaving the topic and its subscriptions in place.

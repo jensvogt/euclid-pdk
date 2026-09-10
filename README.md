@@ -268,6 +268,8 @@ instrumentation that polls every few seconds would otherwise keep a pool permane
 | --- | --- |
 | `create_topic`, `list_topics`, `get_topic_ern`, `get_topic_metadata`, `delete_topic` | topics |
 | `add_topic_tag`, `set_topic_tag`, `delete_topic_tag` | topic tags |
+| `stop_topic`, `start_topic` | holding delivery, and letting it go again |
+| `set_topic_retention` | how long a published message is kept |
 | `publish_message`, `list_messages`, `get_message_count`, `purge_topic`, `purge_all_topics` | messages |
 | `get_message_attribute`, `set_message_attribute` | message attributes |
 | `subscribe`, `unsubscribe`, `list_subscriptions` | delivering a topic's messages to a queue |
@@ -282,6 +284,37 @@ own queue, which is where the message was delivered:
 ens.subscribe(topic_ern, eqs.get_queue_ern("orders"))
 ens.publish_message(topic_ern, '{"order": 17}', priority="HIGH")
 ```
+
+**Stopping a topic holds delivery without refusing publishers.** A stopped topic still accepts what
+is published to it and keeps it; it simply does not fan it out — which is what a subscriber being
+redeployed, or a downstream system taken down for the evening, actually wants. `start_topic` hands
+over the whole backlog, oldest first, as part of the call, and says how much went:
+
+```python
+ens.stop_topic(topic_ern)                        # publishers carry on; delivery does not
+...
+released = ens.start_topic(topic_ern).released   # the backlog goes out here, oldest first
+```
+
+That backlog is real work: a topic that collected a fortnight of traffic is a fortnight of fan-out
+in that one call. The server pages through it and marks each message as it goes, so a start that is
+interrupted has delivered a prefix rather than nothing and running it again resumes.
+`get_topic_metadata(...).held` is how much is waiting, which is what says whether starting it is a
+moment's work.
+
+**Retention is worth setting.** A topic is fanned out at publish time, so nothing ever consumes its
+messages and nothing else removes them — without a period the collection only grows, and every topic
+shares it:
+
+```python
+ens.set_topic_retention(topic_ern, 7 * 24 * 3600)          # a week, in seconds
+ens.set_topic_retention(topic_ern, INSTALLATION_RETENTION) # 0: follow the installation's own
+```
+
+Zero is not "keep nothing" but "whatever `euclid.modules.ens.retention-period` says", followed as it
+changes rather than frozen on the day the topic was made. The change applies to messages published
+afterwards; the ones already stored keep the expiry they were stamped with. A negative period raises
+`ValueError` here rather than costing a round trip to be refused.
 
 Two field names are the server's own asymmetry rather than a typo here: a message attribute travels
 as `key` throughout ENS and as `name` in most of EQS, and this SDK reproduces both rather than
