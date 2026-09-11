@@ -89,6 +89,9 @@ class EuclidEap(ModuleClient):
         there - a deployment pointing at nothing would otherwise become an application that fails
         to start for a reason nobody can see.
 
+        The application ID is unique within the account and the namespace it is deployed into,
+        rather than across the installation: two namespaces may each deploy a "billing".
+
         :param runtime: :data:`JAVA`, :data:`PYTHON`, :data:`NODEJS` or :data:`BINARY`.
         :param bucket: the name of the bucket holding the artifact - a name, not an ERN.
         :param artifact: the artifact's object key within that bucket.
@@ -131,6 +134,11 @@ class EuclidEap(ModuleClient):
 
         ``buckets`` and ``queues`` are re-resolved together whenever either is named, so naming one
         and not the other revokes what the other used to grant. Pass both, or neither.
+
+        Naming a ``namespace`` is a move rather than a field change: the namespace is part of what
+        identifies an application, and it is where the buckets and queues it may reach are resolved.
+        So the resources are re-resolved in the namespace it is moving *to*, and the move is refused
+        with HTTP 409 if an application of this ID already lives there.
 
         Changing the artifact is a change of what will run next; :meth:`redeploy_application` is
         what a new build of the same application usually wants.

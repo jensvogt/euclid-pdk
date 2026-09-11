@@ -69,7 +69,8 @@ class EuclidEts(ModuleClient):
 
         Nothing listens yet: a new server's desired state is ``STOPPED``, so
         :meth:`start_server` is what puts it in service. Refused with HTTP 409 if the ID or the port
-        is taken, and with 404 if the bucket is not there.
+        is taken, and with 404 if the bucket is not there. The ID is unique within the account and
+        the namespace, rather than across the installation.
 
         :param bucket: the name of the bucket the files live in - a name, not an ERN.
         :param port: the port to listen on, 1 to 65535.

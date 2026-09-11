@@ -16,7 +16,8 @@ from euclid.modules.ets import EVERY_INTERFACE, FTP, SFTP
 from test_eam import prepared
 
 SERVER = {"serverId": "partner-drop", "ern": "ern:ets:server/partner-drop",
-          "accountId": "000000000000", "region": "eu-central-1", "protocol": "SFTP",
+          "accountId": "000000000000", "region": "eu-central-1", "namespace": "development",
+          "runtimeName": "partner-drop-91b2", "protocol": "SFTP",
           "address": "0.0.0.0", "port": 2222, "bucketName": "invoices",
           "bucketErn": "ern:esm:bucket/invoices", "homeDirectory": "incoming/",
           "userIds": ["jens"], "userGroups": ["partners"], "directories": ["incoming/2026/"],
@@ -137,6 +138,17 @@ def test_getting_listing_and_deleting(gateway, ets):
 
 
 # -- running --------------------------------------------------------------------------------------
+
+
+def test_a_server_is_identified_by_its_namespace_as_well_as_its_id(gateway, ets):
+    """A serverId is unique within an account and a namespace; the process, its socket and its log
+    channel are named after the runtime name instead, since none of those has a namespace."""
+    gateway.answer("ets", "get-server", SERVER)
+
+    server = ets.get_server("partner-drop")
+
+    assert server.namespace == "development"
+    assert server.runtime_name == "partner-drop-91b2"
 
 
 def test_starting_asks_rather_than_waits(gateway, ets):

@@ -13,6 +13,7 @@ import pytest
 
 from euclid import Euclid, EuclidServiceError, Variant
 from euclid.dto.com import PRIORITY_HIGH
+from euclid.modules.eqs import EVERY_NAMESPACE
 from euclid.modules import eqs as eqs_module
 from fake_queues import FakeQueues, queue_ern
 from test_eam import prepared
@@ -110,12 +111,27 @@ def test_queue_visibility_comes_back_as_the_value_it_now_has(gateway, eqs):
     assert gateway.last().json() == {"ern": QUEUE, "visibility": 120}
 
 
-def test_purging_defaults_to_the_sessions_own_account(gateway, eqs):
+def test_purging_defaults_to_the_sessions_own_namespace(gateway, eqs):
+    """The namespace the caller can see, rather than every namespace of the account - which is the
+    same request with one field emptied, and a much larger thing to have asked for by accident."""
+    gateway.answer("eam", "change-namespace", {})
     gateway.answer("eqs", "purge-all-queues", {})
 
     eqs.purge_all_queues()
+    assert gateway.last().json() == {"region": "eu-central-1", "accountId": "000000000000",
+                                     "nameSpace": ""}
 
-    assert gateway.last().json() == {"region": "eu-central-1", "accountId": "000000000000"}
+    eqs.session.change_namespace("development")
+    eqs.purge_all_queues()
+    assert gateway.last().json()["nameSpace"] == "development"
+
+    # Naming one reaches past the session's scope, which is what an administrator tidying up wants.
+    eqs.purge_all_queues(namespace="staging")
+    assert gateway.last().json()["nameSpace"] == "staging"
+
+    # And emptying it deliberately is how every namespace of the account is asked for.
+    eqs.purge_all_queues(namespace=EVERY_NAMESPACE)
+    assert gateway.last().json()["nameSpace"] == ""
 
 
 def test_redriving_a_dead_letter_queue(gateway, eqs):

@@ -32,7 +32,7 @@ from ..dto.ens import (CreateTopicResult, ListTopicsResult, MessageAttribute, Me
 from .base import ModuleClient
 
 __all__ = ["EuclidEns", "TARGET", "QUEUE", "DEFAULT_MAX_MESSAGE_LENGTH", "RUNNING", "STOPPED",
-           "INSTALLATION_RETENTION"]
+           "INSTALLATION_RETENTION", "EVERY_NAMESPACE"]
 
 TARGET = "ens"
 
@@ -50,6 +50,10 @@ STOPPED = "STOPPED"
 #: The retention period that means "whatever the installation says", rather than a number of
 #: seconds of this topic's own - see :meth:`EuclidEns.set_topic_retention`.
 INSTALLATION_RETENTION = 0
+
+#: What the server reads as "every namespace of this account" where a namespace is asked for -
+#: see :meth:`EuclidEns.purge_all_topics`.
+EVERY_NAMESPACE = ""
 
 
 class EuclidEns(ModuleClient):
@@ -150,15 +154,20 @@ class EuclidEns(ModuleClient):
         """
         self._call("purge-topic", {"ern": ern})
 
-    def purge_all_topics(self, region: str = "", account_id: str = "", namespace: str = "") -> None:
-        """Purges every topic of an account, which defaults to this session's own.
+    def purge_all_topics(self, region: str = "", account_id: str = "",
+                         namespace: str | None = None) -> None:
+        """Purges every topic of one namespace, which defaults to this session's own.
 
         As blunt as it sounds, and there is no undo: it exists for a test environment between runs.
+
+        :param namespace: the namespace to empty. Left as None it is the session's own;
+            :data:`EVERY_NAMESPACE` empties every namespace of the account, which is a different
+            and much larger thing to ask for.
         """
         self._call("purge-all-topics", {
             "region": region or self._session.region,
             "accountId": account_id or self._session.account_id,
-            "nameSpace": namespace or self._session.namespace})
+            "nameSpace": self._session.namespace if namespace is None else namespace})
 
     def add_topic_tag(self, ern: str, key: str, value: str) -> None:
         """Tags a topic."""

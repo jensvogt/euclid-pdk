@@ -77,6 +77,41 @@ with Euclid.for_server(url).login("jens", "secret") as session:
     session.create_account("111", "acme", "an account")
 ```
 
+### Accounts and namespaces
+
+Every named thing in euclid lives in an account and a namespace, and is unique only within that
+pair: two namespaces may each have an `orders` queue, a `suppliers` table, a `billing` application
+or an `orders` route, and they have nothing to do with each other. A bare name always means *yours* —
+`get_queue_ern("orders")`, a bucket named in a deployment, a queue named in a grant — and the server
+resolves it in the account the session logged into and the namespace it is scoped to. It cannot
+reach into another namespace's resource of the same name.
+
+That scope is the session's, and `change_namespace` moves it:
+
+```python
+session.change_namespace("development")
+orders = session.eqs().get_queue_ern("orders")   # development's orders queue
+```
+
+Two consequences worth knowing. Resources that run as processes — EAP applications and ETS transfer
+servers — also carry a `runtime_name`, because a process, its socket and its log channel have no
+namespace to live in and so cannot be keyed by an ID two namespaces may share; it is issued once and
+never changes, so moving an application does not orphan what is already running. And for EAP,
+changing an application's namespace is a *move* rather than a field change: the buckets and queues it
+may reach are re-resolved in the namespace it moves to, and the move is refused if an application of
+that ID already lives there.
+
+The two calls that empty a whole namespace — `eqs.purge_all_queues()` and `ens.purge_all_topics()` —
+default to the session's own, which is the scope the caller can see. Emptying the field asks for
+every namespace of the account, which is a much larger thing to ask for, so it has a name:
+
+```python
+from euclid.modules.eqs import EVERY_NAMESPACE
+
+eqs.purge_all_queues()                          # this namespace
+eqs.purge_all_queues(namespace=EVERY_NAMESPACE) # all of them, deliberately
+```
+
 ### The credentials cache
 
 `login()` writes `~/.euclid/credentials` and reads it back on the next call, so logging in twice
@@ -454,6 +489,9 @@ names none of the three raises `ValueError` here rather than costing a round tri
 | `metrics` | EKV's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
+A table name is unique within an account and a namespace: two namespaces may each have a `suppliers`
+table, and their items are nothing to do with each other.
+
 A table is keyed on one attribute or on two: a partition key that identifies an item, and optionally
 a sort key that orders the items sharing a partition key - which is what makes a partition readable
 as a range. Both have declared types (`STRING`, `NUMBER`, `BINARY`), fixed at creation, and the type
@@ -522,8 +560,13 @@ A few things this SDK reproduces rather than smooths over:
 
 * **Deploying names things; the answer describes ERNs.** A deployment takes a `bucket` name and an
   `artifact` key, and the `Application` that comes back has `bucket_ern` and `artifact_key`; the
-  `buckets` and `queues` granted come back resolved into `resources`. Names are what an operator has
-  in hand, ERNs are what euclid stores.
+  `buckets` and `queues` granted come back resolved into `resources`, in the namespace the
+  application is deployed into. Names are what an operator has in hand, ERNs are what euclid stores.
+* **An application is identified by its namespace as well as its ID.** `Application.namespace` says
+  which one — two namespaces may each deploy a `billing` — and `runtime_name` is what the process,
+  its socket and its log channel are named after, since none of those has a namespace to live in.
+  Naming a `namespace` in `update_application` is a *move*: the grants are re-resolved there, and it
+  is refused if that namespace already has an application of this ID.
 * **`desired_state` is what was asked for and `state` is what is running.** `start_application`
   changes the first and the manager acts on it, so the application in the answer is usually still
   `STOPPED`. The two differing is an application starting up; the two differing for long is one that
@@ -551,6 +594,10 @@ it regardless.
 | `list_listeners` | the ports the gateway answers on, and whether it is answering |
 | `metrics` | EAG's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+A route ID is unique within an account and a namespace rather than across the installation, so two
+namespaces may each publish an `orders` route - and `namespace` on a create says which one it
+publishes in, defaulting to the session's.
 
 A route publishes a path prefix and says where everything beneath it goes: to an application euclid
 runs, or to one action of a euclid module. It is one or the other, never both and never neither -
@@ -628,6 +675,10 @@ several servers without either seeing the other's files. `host_key` is SFTP's, g
 start when left empty — set it only to keep a key clients already trust. `pasv_min`/`pasv_max` are
 FTP's passive range, which whatever sits in front of euclid has to let through as well as the
 control port.
+
+`TransferServer.namespace` says which namespace a server was defined in — a `server_id` is unique
+within an account and a namespace, not across the installation — and `runtime_name` is what its
+process, socket and log channel are named after, for the same reason EAP has one.
 
 As in EAP, `desired_state` is what was asked for and `state` is what is observed, and
 `update_server` sends only what it names — a named list replaces the stored one rather than adding

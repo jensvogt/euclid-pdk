@@ -32,6 +32,13 @@ class TransferServer:
     ern: str = ""
     account_id: str = ""
     region: str = ""
+    #: The namespace this server was defined in. Part of what identifies it: a ``server_id`` is
+    #: unique within an account and a namespace rather than across the installation.
+    namespace: str = ""
+    #: What the process, its socket and its log channel are named after - none of which has an
+    #: account or a namespace to live in, so none can be keyed by a server ID two namespaces may
+    #: each have. Issued once and never touched, so moving a server does not orphan its process.
+    runtime_name: str = ""
     #: ``FTP`` or ``SFTP``.
     protocol: str = ""
     #: The address the server binds to; ``0.0.0.0`` is every interface.
@@ -66,6 +73,7 @@ class TransferServer:
         return TransferServer(
             _json.text(document, "serverId"), _json.text(document, "ern"),
             _json.text(document, "accountId"), _json.text(document, "region"),
+            _json.text(document, "namespace"), _json.text(document, "runtimeName"),
             _json.text(document, "protocol"), _json.text(document, "address"),
             _json.number(document, "port"), _json.text(document, "bucketName"),
             _json.text(document, "bucketErn"), _json.text(document, "homeDirectory"),

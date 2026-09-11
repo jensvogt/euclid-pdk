@@ -12,7 +12,7 @@ import pytest
 from euclid import Euclid, EuclidServiceError, Variant
 from euclid.dto.com import PRIORITY_HIGH
 from euclid.modules import ens as ens_module
-from euclid.modules.ens import INSTALLATION_RETENTION, RUNNING, STOPPED
+from euclid.modules.ens import EVERY_NAMESPACE, INSTALLATION_RETENTION, RUNNING, STOPPED
 from fake_queues import queue_ern
 from test_eam import prepared
 
@@ -159,6 +159,10 @@ def test_purging_and_deleting(gateway, ens):
     ens.purge_all_topics()
     assert gateway.last().json() == {"region": "eu-central-1", "accountId": "000000000000",
                                      "nameSpace": ""}
+
+    # Emptying the namespace deliberately is how every namespace of the account is asked for.
+    ens.purge_all_topics(namespace=EVERY_NAMESPACE)
+    assert gateway.last().json()["nameSpace"] == ""
 
     ens.delete_topic(TOPIC)
     assert gateway.last().action == "delete-topic"

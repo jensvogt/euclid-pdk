@@ -17,7 +17,8 @@ from test_eam import prepared
 
 APPLICATION = {
     "applicationId": "order-service", "ern": "ern:eap:application/order-service",
-    "accountId": "000000000000", "region": "eu-central-1", "runtime": "JAVA",
+    "accountId": "000000000000", "region": "eu-central-1", "namespace": "development",
+    "runtimeName": "order-service-7f3a", "runtime": "JAVA",
     "bucketErn": "ern:esm:bucket/artifacts", "artifactKey": "order-service-1.4.0.jar",
     "version": "1.4.0", "md5Sum": "d41d8cd98f00b204e9800998ecf8427e", "command": "",
     "arguments": ["--server.port=0"], "environment": {"TZ": "Europe/Berlin"},
@@ -142,6 +143,30 @@ def test_a_redeploy_that_would_change_nothing_is_refused(gateway, eap):
 
 
 # -- running --------------------------------------------------------------------------------------
+
+
+def test_an_application_is_identified_by_its_namespace_as_well_as_its_id(gateway, eap):
+    """An applicationId is unique within an account and a namespace rather than across the
+    installation, so the ID alone does not say which application this is."""
+    gateway.answer("eap", "get-application", APPLICATION)
+
+    application = eap.get_application("order-service")
+
+    assert application.namespace == "development"
+    # What the process, its socket and its log channel are named after - which is not the ID,
+    # because none of those has a namespace to live in.
+    assert application.runtime_name == "order-service-7f3a"
+
+
+def test_moving_an_application_to_another_namespace(gateway, eap):
+    """A namespace is part of what identifies an application, so naming one is a move - and it is
+    where the buckets and queues it may reach are resolved."""
+    gateway.answer("eap", "update-application", dict(APPLICATION, namespace="production"))
+
+    moved = eap.update_application("order-service", namespace="production")
+
+    assert gateway.last().json() == {"applicationId": "order-service", "namespace": "production"}
+    assert moved.namespace == "production"
 
 
 def test_starting_asks_rather_than_waits(gateway, eap):

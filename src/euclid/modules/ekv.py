@@ -72,9 +72,10 @@ class EuclidEkv(ModuleClient):
                      sort_key: str = "", sort_key_type: str = STRING) -> TableDescription:
         """Creates a table, and returns it as it was created - with an item count of zero.
 
-        Refused with HTTP 409 if a table of that name already exists, and with HTTP 400 if a key
-        attribute is empty, starts with ``$``, contains ``.``, or if the sort key names the same
-        attribute as the partition key.
+        Refused with HTTP 409 if a table of that name already exists in this account and
+        namespace - two namespaces may each have a "suppliers" table, whose items are nothing
+        to do with each other - and with HTTP 400 if a key attribute is empty, starts with ``$``,
+        contains ``.``, or if the sort key names the same attribute as the partition key.
 
         :param partition_key: the attribute every item is identified by.
         :param partition_key_type: :data:`STRING`, :data:`NUMBER` or :data:`BINARY`.

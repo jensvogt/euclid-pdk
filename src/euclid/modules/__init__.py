@@ -14,4 +14,5 @@ from .ess import EuclidEss
 from .ets import EuclidEts
 
 __all__ = ["ModuleClient", "EuclidEam", "EuclidSession", "EuclidEsm", "EuclidEqs", "EuclidEns",
-           "EuclidEkm", "EuclidEss", "EuclidEkv", "EuclidEag", "EuclidEap", "EuclidEes", "EuclidEts", "parse_bucket_event"]
+           "EuclidEkm", "EuclidEss", "EuclidEkv", "EuclidEag", "EuclidEap", "EuclidEes",
+           "EuclidEts", "parse_bucket_event"]

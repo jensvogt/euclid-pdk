@@ -29,7 +29,7 @@ from ..dto.eqs import (CreateQueueResult, ListQueuesResult, Message, MessageAttr
 from .base import ModuleClient
 
 __all__ = ["EuclidEqs", "TARGET", "DEFAULT_VISIBILITY", "DEFAULT_MAX_RETRIES",
-           "DEFAULT_MAX_MESSAGE_LENGTH"]
+           "DEFAULT_MAX_MESSAGE_LENGTH", "EVERY_NAMESPACE"]
 
 TARGET = "eqs"
 
@@ -41,6 +41,11 @@ DEFAULT_MAX_RETRIES = 3
 
 #: The largest message a queue accepts, in bytes.
 DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024
+
+#: What the server reads as "every namespace of this account" where a namespace is asked for. Named
+#: rather than written as an empty string, because the two things an empty string could plausibly
+#: mean here - the unnamed namespace, and all of them - are very different sizes of mistake.
+EVERY_NAMESPACE = ""
 
 #: How long to pause before asking again when the server answered a long poll immediately because
 #: it had no slot free to wait in. Only reached when the server is short of threads, which is the
@@ -122,14 +127,21 @@ class EuclidEqs(ModuleClient):
         """Deletes every message on a queue, leaving the queue itself in place."""
         self._call("purge-queue", {"ern": ern})
 
-    def purge_all_queues(self, region: str = "", account_id: str = "") -> None:
-        """Deletes every message on every queue of an account, which defaults to this session's own.
+    def purge_all_queues(self, region: str = "", account_id: str = "",
+                         namespace: str | None = None) -> None:
+        """Deletes every message on every queue of one namespace, which defaults to the session's.
 
         Exactly as blunt as it sounds, and there is no undo: it exists for a test environment
         between runs rather than for anything that has consumers attached.
+
+        :param namespace: the namespace to empty. Left as None it is the session's own, which is
+            the answer that matches what the caller can see; :data:`EVERY_NAMESPACE` empties every
+            namespace of the account, which is a different and much larger thing to ask for.
         """
-        self._call("purge-all-queues", {"region": region or self._session.region,
-                                        "accountId": account_id or self._session.account_id})
+        self._call("purge-all-queues", {
+            "region": region or self._session.region,
+            "accountId": account_id or self._session.account_id,
+            "nameSpace": self._session.namespace if namespace is None else namespace})
 
     def stop_queue(self, ern: str) -> QueueStatusResult:
         """Stops a queue, so it hands no more messages out.

@@ -69,7 +69,8 @@ class EuclidEag(ModuleClient):
         than becoming a route that answers 503 for every request - which looks like an application
         that is down rather than one that was never deployed.
 
-        :param route_id: the name to manage this route under, unique across the installation.
+        :param route_id: the name to manage this route under, unique within the account and the
+            namespace it is published in - two namespaces may each have an "orders" route.
         :param path: the path prefix to publish, which has to start with ``/``.
         :param application_id: the application requests are sent to, which has to exist already.
         :param module_target: the euclid module to reach instead, e.g. ``"eam"`` - see

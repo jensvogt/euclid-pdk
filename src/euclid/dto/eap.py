@@ -54,6 +54,17 @@ class Application:
     ern: str = ""
     account_id: str = ""
     region: str = ""
+    #: The namespace this application was deployed into, and the one its queue, topic and bucket
+    #: names are resolved in. Part of what identifies it: an ``application_id`` is unique within
+    #: an account and a namespace, so the ID alone does not say which application this is.
+    namespace: str = ""
+    #: What the process, its socket and its log channel are named after.
+    #:
+    #: None of those has an account or a namespace to live in, so they cannot be keyed by an
+    #: application ID that two namespaces may each have. Issued once when the application is created
+    #: and never touched afterwards - deriving it from the account, namespace and ID instead would
+    #: make it change whenever those did, and moving an application would orphan its processes.
+    runtime_name: str = ""
     #: ``JAVA``, ``PYTHON``, ``NODEJS`` or ``BINARY`` - see :mod:`euclid.modules.eap`.
     runtime: str = ""
     #: The bucket the artifact was deployed from, as an ERN. Deployed by name.
@@ -92,6 +103,7 @@ class Application:
         return Application(
             _json.text(document, "applicationId"), _json.text(document, "ern"),
             _json.text(document, "accountId"), _json.text(document, "region"),
+            _json.text(document, "namespace"), _json.text(document, "runtimeName"),
             _json.text(document, "runtime"), _json.text(document, "bucketErn"),
             _json.text(document, "artifactKey"), _json.text(document, "version"),
             _json.text(document, "md5Sum"), _json.text(document, "command"),
