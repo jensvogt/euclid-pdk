@@ -13,7 +13,8 @@ import pytest
 
 from euclid import Euclid, EuclidServiceError, Variant
 from euclid.dto.com import PRIORITY_HIGH
-from euclid.modules.eqs import EVERY_NAMESPACE, INSTALLATION_MAX_MESSAGE_LENGTH, MAX_DELAY
+from euclid.modules.eqs import (EVERY_NAMESPACE, INSTALLATION_MAX_MESSAGE_LENGTH, MAX_DELAY,
+                                MAX_VISIBILITY)
 from euclid.modules import eqs as eqs_module
 from fake_queues import FakeQueues, queue_ern
 from test_eam import prepared
@@ -109,6 +110,25 @@ def test_queue_visibility_comes_back_as_the_value_it_now_has(gateway, eqs):
 
     assert eqs.set_queue_visibility(QUEUE, 120) == 120
     assert gateway.last().json() == {"ern": QUEUE, "visibility": 120}
+
+
+def test_a_visibility_no_message_could_take_says_so_before_the_round_trip(gateway, eqs):
+    """One range for both setters, because a queue default outside what a single message may be
+    given would be a figure no message could ever actually take."""
+    gateway.answer("eqs", "set-queue-visibility", {"ern": QUEUE, "visibility": MAX_VISIBILITY})
+    gateway.answer("eqs", "set-message-visibility", {})
+
+    assert eqs.set_queue_visibility(QUEUE, MAX_VISIBILITY) == MAX_VISIBILITY
+    eqs.set_message_visibility("message-1", MAX_VISIBILITY)
+
+    for refused in (-1, MAX_VISIBILITY + 1):
+        with pytest.raises(ValueError, match="between 0 and 43200"):
+            eqs.set_queue_visibility(QUEUE, refused)
+        with pytest.raises(ValueError, match="between 0 and 43200"):
+            eqs.set_message_visibility("message-1", refused)
+
+    # None of the four refusals reached the server.
+    assert gateway.last().action == "set-message-visibility"
 
 
 def test_queue_delay_comes_back_as_the_value_it_now_has(gateway, eqs):

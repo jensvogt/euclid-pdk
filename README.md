@@ -291,18 +291,26 @@ handles for you: with no wait asked for, an empty queue costs no receive at all 
 write); and a server with no long-poll slot free answers immediately rather than queueing behind the
 waiters, which is a pause and another ask rather than an empty result.
 
-**A queue's delay and its size limit can be changed while it is in service**, and both apply to what
-is sent from here on:
+**A queue's visibility, delay and size limit can be changed while it is in service**, and all three
+apply to what is sent or received from here on:
 
 ```python
-from euclid.modules.eqs import INSTALLATION_MAX_MESSAGE_LENGTH, MAX_DELAY
+from euclid.modules.eqs import INSTALLATION_MAX_MESSAGE_LENGTH, MAX_DELAY, MAX_VISIBILITY
 
+eqs.set_queue_visibility(queue_ern, 120)           # seconds, 0 to MAX_VISIBILITY (43200)
 eqs.set_queue_delay(queue_ern, 30)                 # seconds, 0 to MAX_DELAY (900)
 
 limits = eqs.set_queue_max_message_length(queue_ern, 262144)
 limits.max_message_length                          # what the queue holds
 limits.effective_max_message_length                # what a send is measured against
 ```
+
+Only the queue's default visibility changes: messages already in flight keep the window they were
+given when they were received, so this can neither expire a lease a consumer is still working on nor
+hold back a message its consumer has already given up on. `MAX_VISIBILITY` is twelve hours, the
+bound AWS SQS holds `VisibilityTimeout` to, and it is one range for both `set_queue_visibility` and
+`set_message_visibility` — a queue default outside what a single message may be given would be a
+figure no message could ever take.
 
 A message already waiting was given its due time when it arrived, so lowering the delay does not
 bring it forward and raising it does not push it back — which is what keeps this from disturbing work

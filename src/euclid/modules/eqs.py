@@ -30,7 +30,7 @@ from .base import ModuleClient
 
 __all__ = ["EuclidEqs", "TARGET", "DEFAULT_VISIBILITY", "DEFAULT_MAX_RETRIES",
            "DEFAULT_MAX_MESSAGE_LENGTH", "INSTALLATION_MAX_MESSAGE_LENGTH", "MAX_DELAY",
-           "EVERY_NAMESPACE"]
+           "MAX_VISIBILITY", "EVERY_NAMESPACE"]
 
 TARGET = "eqs"
 
@@ -52,6 +52,12 @@ INSTALLATION_MAX_MESSAGE_LENGTH = 0
 #: DelaySeconds to, and euclid keeps it: a delay is for smoothing a burst, and anything longer is a
 #: schedule rather than a queue.
 MAX_DELAY = 900
+
+#: The longest a message may stay invisible, in seconds - twelve hours, the bound AWS SQS holds
+#: VisibilityTimeout to. The same figure for a queue's default and for one message's lease: a
+#: default outside the range a message may be given would be one no message could ever take. See
+#: :meth:`EuclidEqs.set_queue_visibility` and :meth:`EuclidEqs.set_message_visibility`.
+MAX_VISIBILITY = 43200
 
 #: What the server reads as "every namespace of this account" where a namespace is asked for. Named
 #: rather than written as an empty string, because the two things an empty string could plausibly
@@ -173,7 +179,13 @@ class EuclidEqs(ModuleClient):
         Only the default changes. Messages already in flight keep the window they were given when
         they were received, so this can neither expire a lease a consumer is still working on nor
         hold back a message its consumer has already given up on.
+
+        :param visibility: seconds, 0 to :data:`MAX_VISIBILITY`.
+        :raises ValueError: if the timeout is outside that range, which the server refuses anyway -
+            this just says so before the round trip.
         """
+        if not 0 <= visibility <= MAX_VISIBILITY:
+            raise ValueError(f"visibility must be between 0 and {MAX_VISIBILITY} seconds")
         return self._number("set-queue-visibility", {"ern": ern, "visibility": visibility}, "visibility")
 
     def set_queue_delay(self, ern: str, delay: int) -> int:
@@ -361,7 +373,13 @@ class EuclidEqs(ModuleClient):
         euclid-jdk sends and what a server older than the newer name knows it by; such a server
         refuses this with HTTP 404, and :meth:`~euclid.modules.base.ModuleClient.call` is the way
         round that.
+
+        :param visibility: seconds, 0 to :data:`MAX_VISIBILITY` - the same range a queue's default
+            is held to.
+        :raises ValueError: if the timeout is outside that range, which the server refuses anyway.
         """
+        if not 0 <= visibility <= MAX_VISIBILITY:
+            raise ValueError(f"visibility must be between 0 and {MAX_VISIBILITY} seconds")
         self._call("set-message-visibility", {"messageId": message_id, "visibility": visibility})
 
     def get_message_attribute(self, message_id: str, name: str) -> MessageAttribute:
