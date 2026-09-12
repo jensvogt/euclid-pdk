@@ -14,11 +14,14 @@ until a consumer takes it; a topic hands each message to every subscriber and ke
 of having done so. So there is no receive here, and no receipt handle: a subscriber consumes from
 its own queue, which is where the message was delivered.
 
-Two things about a topic can be changed while it is in service. :meth:`~EuclidEns.stop_topic` holds
-delivery without refusing publishers - what arrives meanwhile is kept and fanned out when the topic
-is started again - which is what a subscriber being redeployed asks for. And
+Three things about a topic can be changed while it is in service. :meth:`~EuclidEns.stop_topic`
+holds delivery without refusing publishers - what arrives meanwhile is kept and fanned out when the
+topic is started again - which is what a subscriber being redeployed asks for.
 :meth:`~EuclidEns.set_topic_retention` says how long a published message is kept at all, since a
-topic is fanned out at publish time and nothing else would ever remove it.
+topic is fanned out at publish time and nothing else would ever remove it. And
+:meth:`~EuclidEns.set_topic_max_message_length` says how large one may be. All three apply to what
+is published from here on; what the topic already holds was accepted under the rules of its own day
+and is left alone.
 """
 
 from __future__ import annotations
@@ -27,12 +30,12 @@ from typing import Any, Mapping
 
 from ..dto.com import Variant
 from ..dto.ens import (CreateTopicResult, ListTopicsResult, MessageAttribute, MessageCount,
-                       MessagesResult, SubscribeResult, Subscription, TopicMetadata,
-                       TopicRetentionResult, TopicStateResult)
+                       MessagesResult, SubscribeResult, Subscription, TopicMaxMessageLengthResult,
+                       TopicMetadata, TopicRetentionResult, TopicStateResult)
 from .base import ModuleClient
 
 __all__ = ["EuclidEns", "TARGET", "QUEUE", "DEFAULT_MAX_MESSAGE_LENGTH", "RUNNING", "STOPPED",
-           "INSTALLATION_RETENTION", "EVERY_NAMESPACE"]
+           "INSTALLATION_RETENTION", "RETENTION_FOREVER", "EVERY_NAMESPACE"]
 
 TARGET = "ens"
 
@@ -50,6 +53,12 @@ STOPPED = "STOPPED"
 #: The retention period that means "whatever the installation says", rather than a number of
 #: seconds of this topic's own - see :meth:`EuclidEns.set_topic_retention`.
 INSTALLATION_RETENTION = 0
+
+#: The retention period that keeps every message published to the topic. Not a very large number of
+#: seconds: the server stores such a message with no expiry at all, which is what its TTL index
+#: ignores, so nothing is ever going to remove it. The topic then grows without limit and only
+#: :meth:`EuclidEns.purge_topic` empties it - see :meth:`EuclidEns.set_topic_retention`.
+RETENTION_FOREVER = -1
 
 #: What the server reads as "every namespace of this account" where a namespace is asked for -
 #: see :meth:`EuclidEns.purge_all_topics`.
@@ -132,19 +141,44 @@ class EuclidEns(ModuleClient):
         because every topic shares it, one busy topic is paid for by every publish in the
         installation.
 
-        :param retention_period: seconds, or :data:`INSTALLATION_RETENTION` to follow
+        :param retention_period: seconds; :data:`INSTALLATION_RETENTION` to follow
             ``euclid.modules.ens.retention-period`` as it changes rather than freezing a copy of
-            whatever it says today.
-        :raises ValueError: if the period is negative, which the server refuses anyway - this just
-            says so before the round trip.
+            whatever it says today; or :data:`RETENTION_FOREVER` to keep every message published to
+            this topic.
+        :raises ValueError: if the period is below :data:`RETENTION_FOREVER`, which the server
+            refuses anyway - this just says so before the round trip.
 
         The change applies to messages published afterwards; the ones already stored keep the expiry
         they were given, since that is stamped on each message rather than looked up when it is read.
         """
-        if retention_period < 0:
-            raise ValueError("retention_period cannot be negative; zero follows the installation default")
+        # -1 is the one negative that means something: keep everything. Anything below it is a typo
+        # the server refuses too, said here so that it costs no round trip.
+        if retention_period < RETENTION_FOREVER:
+            raise ValueError("retention_period has to be seconds, 0 to follow the installation default, "
+                             "or -1 to keep messages forever")
         return TopicRetentionResult.from_json(self._call("set-topic-retention", {
             "ern": ern, "retentionPeriod": retention_period}))
+
+    def set_topic_max_message_length(self, ern: str,
+                                     max_message_length: int) -> TopicMaxMessageLengthResult:
+        """Changes the largest message this topic accepts, in bytes.
+
+        Applies to what is published from here on. A message already in the topic was accepted under
+        the rule in force when it arrived, and lowering the limit is not a reason to go back and lose
+        it.
+
+        Unlike a queue's limit, zero is not "follow the installation's default" here - it is a topic
+        that accepts nothing, and the server refuses it. Taking nothing for a while is what
+        :meth:`stop_topic` is for, and that says so reversibly.
+
+        :raises ValueError: if the limit is not positive, which the server refuses anyway - this
+            just says so before the round trip.
+        """
+        if max_message_length <= 0:
+            raise ValueError("max_message_length has to be a positive number of bytes; "
+                             "stop_topic is how a topic stops taking anything")
+        return TopicMaxMessageLengthResult.from_json(self._call("set-topic-max-message-length", {
+            "ern": ern, "maxMessageLength": max_message_length}))
 
     def purge_topic(self, ern: str) -> None:
         """Deletes every message a topic has kept, leaving the topic and its subscriptions in place.

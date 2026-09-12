@@ -24,6 +24,7 @@ __all__ = [
     "MessageCount",
     "MessageMetadata",
     "QueueStatusResult",
+    "QueueMaxMessageLengthResult",
     "RedriveTarget",
     "RedriveDlqResult",
 ]
@@ -269,6 +270,28 @@ class QueueStatusResult:
     def from_json(document: Any) -> "QueueStatusResult":
         return QueueStatusResult(_json.text(document, "ern"), _json.text(document, "status"),
                                  _json.number(document, "available"))
+
+
+@dataclass
+class QueueMaxMessageLengthResult:
+    """A queue's message-size limit after setting it, as stored and as enforced.
+
+    The two differ for a queue that has none of its own: ``max_message_length`` is then zero, and
+    ``effective_max_message_length`` is the installation's default, which is what a send is actually
+    measured against. Reporting only the stored zero would read as "this queue accepts nothing".
+    """
+
+    ern: str = ""
+    #: What the queue holds. Zero means it has not been given a limit of its own.
+    max_message_length: int = 0
+    #: What a send is measured against, which is never zero.
+    effective_max_message_length: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "QueueMaxMessageLengthResult":
+        return QueueMaxMessageLengthResult(
+            _json.text(document, "ern"), _json.number(document, "maxMessageLength"),
+            _json.number(document, "effectiveMaxMessageLength"))
 
 
 @dataclass

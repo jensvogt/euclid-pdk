@@ -27,6 +27,7 @@ __all__ = [
     "SubscribeResult",
     "TopicStateResult",
     "TopicRetentionResult",
+    "TopicMaxMessageLengthResult",
 ]
 
 
@@ -241,7 +242,10 @@ class TopicStateResult:
 
 @dataclass
 class TopicRetentionResult:
-    """A topic's retention period after setting it, in seconds. Zero means the installation's own."""
+    """A topic's retention period after setting it, in seconds.
+
+    Zero means the installation's own; -1 means the topic keeps everything published to it.
+    """
 
     ern: str = ""
     retention_period: int = 0
@@ -249,6 +253,23 @@ class TopicRetentionResult:
     @staticmethod
     def from_json(document: Any) -> "TopicRetentionResult":
         return TopicRetentionResult(_json.text(document, "ern"), _json.number(document, "retentionPeriod"))
+
+
+@dataclass
+class TopicMaxMessageLengthResult:
+    """A topic's message-size limit after setting it, in bytes.
+
+    One number rather than EQS's two: a topic will not take a zero, so what it holds and what a
+    publish is measured against cannot come apart the way a queue's can.
+    """
+
+    ern: str = ""
+    max_message_length: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "TopicMaxMessageLengthResult":
+        return TopicMaxMessageLengthResult(_json.text(document, "ern"),
+                                           _json.number(document, "maxMessageLength"))
 
 
 @dataclass

@@ -12,7 +12,7 @@ import pytest
 from euclid import Euclid, EuclidServiceError, Variant
 from euclid.dto.com import PRIORITY_HIGH
 from euclid.modules import ens as ens_module
-from euclid.modules.ens import EVERY_NAMESPACE, INSTALLATION_RETENTION, RUNNING, STOPPED
+from euclid.modules.ens import EVERY_NAMESPACE, INSTALLATION_RETENTION, RETENTION_FOREVER, RUNNING, STOPPED
 from fake_queues import queue_ern
 from test_eam import prepared
 
@@ -140,9 +140,37 @@ def test_a_retention_of_zero_hands_the_topic_back_to_the_installation(gateway, e
     assert gateway.last().json()["retentionPeriod"] == 0
 
 
-def test_a_negative_retention_says_so_before_the_round_trip(gateway, ens):
-    with pytest.raises(ValueError, match="cannot be negative"):
-        ens.set_topic_retention(TOPIC, -1)
+def test_a_retention_of_minus_one_keeps_everything(gateway, ens):
+    """The one negative that means something: the server stores such a message with no expiry at
+    all rather than with a very distant one, so nothing ever removes it."""
+    gateway.answer("ens", "set-topic-retention", {"ern": TOPIC, "retentionPeriod": -1})
+
+    assert ens.set_topic_retention(TOPIC, RETENTION_FOREVER).retention_period == RETENTION_FOREVER
+    assert gateway.last().json()["retentionPeriod"] == -1
+
+
+def test_a_retention_below_minus_one_says_so_before_the_round_trip(gateway, ens):
+    with pytest.raises(ValueError, match="keep messages forever"):
+        ens.set_topic_retention(TOPIC, -2)
+
+    assert [r for r in gateway.requests if r.target == "ens"] == []
+
+
+def test_setting_the_largest_message_a_topic_takes(gateway, ens):
+    gateway.answer("ens", "set-topic-max-message-length", {"ern": TOPIC, "maxMessageLength": 262144})
+
+    result = ens.set_topic_max_message_length(TOPIC, 262144)
+    assert gateway.last().json() == {"ern": TOPIC, "maxMessageLength": 262144}
+    assert (result.ern, result.max_message_length) == (TOPIC, 262144)
+
+
+def test_a_topic_will_not_take_the_zero_a_queue_does(gateway, ens):
+    """Not the same rule as EQS's. A queue reads zero as "follow the installation's default"; a
+    topic would read it as one that accepts nothing, and stop_topic is how that is asked for -
+    reversibly, and without losing what is published meanwhile."""
+    for refused in (0, -1):
+        with pytest.raises(ValueError, match="positive number of bytes"):
+            ens.set_topic_max_message_length(TOPIC, refused)
 
     assert [r for r in gateway.requests if r.target == "ens"] == []
 

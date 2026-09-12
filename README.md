@@ -269,6 +269,7 @@ token quietly, and hashing raw bytes is exact here in a way it is not in every l
 | `create_queue`, `list_queues`, `get_queue_ern`, `get_queue_metadata`, `delete_queue` | queues |
 | `add_queue_tag`, `set_queue_tag`, `delete_queue_tag` | queue tags |
 | `stop_queue`, `start_queue`, `set_queue_visibility`, `purge_queue`, `purge_all_queues` | what a queue does |
+| `set_queue_delay`, `set_queue_max_message_length` | how long a send is held back, and how large it may be |
 | `send_message`, `receive_messages`, `receive_all_messages`, `delete_message`, `delete_message_by_id` | messages |
 | `list_messages`, `get_message_count`, `get_message_metadata`, `set_message_visibility` | inspecting them |
 | `get_message_attribute`, `set_message_attribute` | message attributes |
@@ -290,6 +291,32 @@ handles for you: with no wait asked for, an empty queue costs no receive at all 
 write); and a server with no long-poll slot free answers immediately rather than queueing behind the
 waiters, which is a pause and another ask rather than an empty result.
 
+**A queue's delay and its size limit can be changed while it is in service**, and both apply to what
+is sent from here on:
+
+```python
+from euclid.modules.eqs import INSTALLATION_MAX_MESSAGE_LENGTH, MAX_DELAY
+
+eqs.set_queue_delay(queue_ern, 30)                 # seconds, 0 to MAX_DELAY (900)
+
+limits = eqs.set_queue_max_message_length(queue_ern, 262144)
+limits.max_message_length                          # what the queue holds
+limits.effective_max_message_length                # what a send is measured against
+```
+
+A message already waiting was given its due time when it arrived, so lowering the delay does not
+bring it forward and raising it does not push it back — which is what keeps this from disturbing work
+already in the queue. `MAX_DELAY` is the bound AWS SQS holds `DelaySeconds` to and euclid keeps it: a
+delay smooths a burst, and anything longer is a schedule rather than a queue. A delay outside that
+range raises `ValueError` here rather than costing a round trip to be refused.
+
+Two numbers come back from the size limit because they can differ.
+`INSTALLATION_MAX_MESSAGE_LENGTH` (zero) stores nothing of the queue's own and follows the
+installation's default as that changes, and the effective limit is what that default currently is —
+reporting the stored zero alone would read as a queue that accepts nothing. A negative limit raises
+`ValueError`. Messages already on the queue were accepted under the rule in force when they arrived,
+and a lowered limit is not a reason to lose them.
+
 `as_internal()` returns a second view whose requests carry `x-euclid-internal`. Some calls observe
 the system rather than use it - the same `get_message_count` is a user's question one moment and a
 metric collector's poll the next - and euclid scales a module on the traffic it sees, so
@@ -304,7 +331,7 @@ instrumentation that polls every few seconds would otherwise keep a pool permane
 | `create_topic`, `list_topics`, `get_topic_ern`, `get_topic_metadata`, `delete_topic` | topics |
 | `add_topic_tag`, `set_topic_tag`, `delete_topic_tag` | topic tags |
 | `stop_topic`, `start_topic` | holding delivery, and letting it go again |
-| `set_topic_retention` | how long a published message is kept |
+| `set_topic_retention`, `set_topic_max_message_length` | how long a published message is kept, and how large it may be |
 | `publish_message`, `list_messages`, `get_message_count`, `purge_topic`, `purge_all_topics` | messages |
 | `get_message_attribute`, `set_message_attribute` | message attributes |
 | `subscribe`, `unsubscribe`, `list_subscriptions` | delivering a topic's messages to a queue |
@@ -342,14 +369,28 @@ messages and nothing else removes them — without a period the collection only 
 shares it:
 
 ```python
+from euclid.modules.ens import INSTALLATION_RETENTION, RETENTION_FOREVER
+
 ens.set_topic_retention(topic_ern, 7 * 24 * 3600)          # a week, in seconds
 ens.set_topic_retention(topic_ern, INSTALLATION_RETENTION) # 0: follow the installation's own
+ens.set_topic_retention(topic_ern, RETENTION_FOREVER)      # -1: keep everything
 ```
 
 Zero is not "keep nothing" but "whatever `euclid.modules.ens.retention-period` says", followed as it
-changes rather than frozen on the day the topic was made. The change applies to messages published
-afterwards; the ones already stored keep the expiry they were stamped with. A negative period raises
-`ValueError` here rather than costing a round trip to be refused.
+changes rather than frozen on the day the topic was made. `RETENTION_FOREVER` is not a very long
+period either: the server stores such a message with no expiry at all, which is what its TTL index
+ignores, so nothing ever removes it — the topic then grows without limit and only `purge_topic`
+empties it. The change applies to messages published afterwards; the ones already stored keep the
+expiry they were stamped with. A period below `-1` raises `ValueError` here rather than costing a
+round trip to be refused.
+
+**A topic's size limit is not a queue's rule.** `set_topic_max_message_length(topic_ern, 262144)`
+sets the largest message the topic accepts, and one number comes back rather than two — because a
+topic will not take a zero, so what it holds and what a publish is measured against cannot come
+apart the way a queue's can. Zero here is not "follow the installation's default" but a topic that
+accepts nothing, which the server refuses and this SDK refuses first; taking nothing for a while is
+what `stop_topic` is for, and that says so reversibly and without losing what is published meanwhile.
+As with retention, the change applies to what is published afterwards.
 
 Two field names are the server's own asymmetry rather than a typo here: a message attribute travels
 as `key` throughout ENS and as `name` in most of EQS, and this SDK reproduces both rather than

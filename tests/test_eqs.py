@@ -13,7 +13,7 @@ import pytest
 
 from euclid import Euclid, EuclidServiceError, Variant
 from euclid.dto.com import PRIORITY_HIGH
-from euclid.modules.eqs import EVERY_NAMESPACE
+from euclid.modules.eqs import EVERY_NAMESPACE, INSTALLATION_MAX_MESSAGE_LENGTH, MAX_DELAY
 from euclid.modules import eqs as eqs_module
 from fake_queues import FakeQueues, queue_ern
 from test_eam import prepared
@@ -109,6 +109,53 @@ def test_queue_visibility_comes_back_as_the_value_it_now_has(gateway, eqs):
 
     assert eqs.set_queue_visibility(QUEUE, 120) == 120
     assert gateway.last().json() == {"ern": QUEUE, "visibility": 120}
+
+
+def test_queue_delay_comes_back_as_the_value_it_now_has(gateway, eqs):
+    gateway.answer("eqs", "set-queue-delay", {"ern": QUEUE, "delay": 30})
+
+    assert eqs.set_queue_delay(QUEUE, 30) == 30
+    assert gateway.last().json() == {"ern": QUEUE, "delay": 30}
+
+
+def test_a_delay_outside_what_a_queue_holds_says_so_before_the_round_trip(gateway, eqs):
+    """Zero and the bound itself are a delay; anything past the bound is a schedule."""
+    gateway.answer("eqs", "set-queue-delay", {"ern": QUEUE, "delay": 0})
+
+    assert eqs.set_queue_delay(QUEUE, 0) == 0
+    assert eqs.set_queue_delay(QUEUE, MAX_DELAY) == 0
+
+    for refused in (-1, MAX_DELAY + 1):
+        with pytest.raises(ValueError, match="between 0 and 900"):
+            eqs.set_queue_delay(QUEUE, refused)
+
+    # Nothing of the two refusals reached the server.
+    assert gateway.last().json() == {"ern": QUEUE, "delay": MAX_DELAY}
+
+
+def test_a_queues_message_limit_comes_back_as_stored_and_as_enforced(gateway, eqs):
+    gateway.answer("eqs", "set-queue-max-message-length", {
+        "ern": QUEUE, "maxMessageLength": 262144, "effectiveMaxMessageLength": 262144})
+
+    result = eqs.set_queue_max_message_length(QUEUE, 262144)
+    assert gateway.last().json() == {"ern": QUEUE, "maxMessageLength": 262144}
+    assert (result.max_message_length, result.effective_max_message_length) == (262144, 262144)
+
+
+def test_a_queue_with_no_limit_of_its_own_is_measured_against_the_installations(gateway, eqs):
+    """Where the two numbers come apart: the queue stores nothing, and a send is still measured
+    against something - reporting the stored zero alone would read as a queue that accepts nothing."""
+    gateway.answer("eqs", "set-queue-max-message-length", {
+        "ern": QUEUE, "maxMessageLength": 0, "effectiveMaxMessageLength": 1048576})
+
+    result = eqs.set_queue_max_message_length(QUEUE, INSTALLATION_MAX_MESSAGE_LENGTH)
+    assert gateway.last().json()["maxMessageLength"] == 0
+    assert (result.max_message_length, result.effective_max_message_length) == (0, 1048576)
+
+
+def test_a_negative_message_limit_says_so_before_the_round_trip(gateway, eqs):
+    with pytest.raises(ValueError, match="cannot be negative"):
+        eqs.set_queue_max_message_length(QUEUE, -1)
 
 
 def test_purging_defaults_to_the_sessions_own_namespace(gateway, eqs):

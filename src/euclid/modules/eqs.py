@@ -24,12 +24,13 @@ from typing import Any, Mapping
 
 from ..dto.com import Variant
 from ..dto.eqs import (CreateQueueResult, ListQueuesResult, Message, MessageAttribute, MessageCount,
-                       MessageMetadata, MessagesResult, QueueMetadata, QueueStatusResult,
-                       RedriveDlqResult)
+                       MessageMetadata, MessagesResult, QueueMaxMessageLengthResult, QueueMetadata,
+                       QueueStatusResult, RedriveDlqResult)
 from .base import ModuleClient
 
 __all__ = ["EuclidEqs", "TARGET", "DEFAULT_VISIBILITY", "DEFAULT_MAX_RETRIES",
-           "DEFAULT_MAX_MESSAGE_LENGTH", "EVERY_NAMESPACE"]
+           "DEFAULT_MAX_MESSAGE_LENGTH", "INSTALLATION_MAX_MESSAGE_LENGTH", "MAX_DELAY",
+           "EVERY_NAMESPACE"]
 
 TARGET = "eqs"
 
@@ -41,6 +42,16 @@ DEFAULT_MAX_RETRIES = 3
 
 #: The largest message a queue accepts, in bytes.
 DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024
+
+#: The message-size limit that means "whatever the installation's default is" rather than a number
+#: of bytes of this queue's own - see :meth:`EuclidEqs.set_queue_max_message_length`. Not "accepts
+#: nothing", which is what a bare zero reads as.
+INSTALLATION_MAX_MESSAGE_LENGTH = 0
+
+#: The longest a queue may hold a sent message back, in seconds. The bound AWS SQS holds
+#: DelaySeconds to, and euclid keeps it: a delay is for smoothing a burst, and anything longer is a
+#: schedule rather than a queue.
+MAX_DELAY = 900
 
 #: What the server reads as "every namespace of this account" where a namespace is asked for. Named
 #: rather than written as an empty string, because the two things an empty string could plausibly
@@ -164,6 +175,43 @@ class EuclidEqs(ModuleClient):
         hold back a message its consumer has already given up on.
         """
         return self._number("set-queue-visibility", {"ern": ern, "visibility": visibility}, "visibility")
+
+    def set_queue_delay(self, ern: str, delay: int) -> int:
+        """Changes how long a sent message is held back before it can be received, and returns the
+        delay the queue now has.
+
+        Only what is sent from here on. A message already waiting was given its due time when it
+        arrived, so lowering the delay does not bring it forward and raising it does not push it
+        back - which is what keeps this from disturbing work already in the queue.
+
+        :param delay: seconds, 0 to :data:`MAX_DELAY`.
+        :raises ValueError: if the delay is outside that range, which the server refuses anyway -
+            this just says so before the round trip.
+        """
+        if not 0 <= delay <= MAX_DELAY:
+            raise ValueError(f"delay must be between 0 and {MAX_DELAY} seconds")
+        return self._number("set-queue-delay", {"ern": ern, "delay": delay}, "delay")
+
+    def set_queue_max_message_length(self, ern: str,
+                                     max_message_length: int) -> QueueMaxMessageLengthResult:
+        """Changes the largest message this queue accepts, and returns both limits it now has.
+
+        Two numbers come back because they can differ: what the queue holds, and what a send is
+        actually measured against. :data:`INSTALLATION_MAX_MESSAGE_LENGTH` stores nothing of the
+        queue's own and follows the installation's default as that changes, and the effective limit
+        is what that default currently is - reporting the stored zero alone would read as a queue
+        that accepts nothing.
+
+        Applies to what is sent from here on. A message already on the queue was accepted under the
+        rule in force when it arrived, and lowering the limit is not a reason to lose it.
+
+        :raises ValueError: if the limit is negative, which the server refuses anyway.
+        """
+        if max_message_length < 0:
+            raise ValueError("max_message_length cannot be negative; "
+                             f"{INSTALLATION_MAX_MESSAGE_LENGTH} follows the installation's default")
+        return QueueMaxMessageLengthResult.from_json(self._call("set-queue-max-message-length", {
+            "ern": ern, "maxMessageLength": max_message_length}))
 
     def redrive_dlq(self, ern: str, target_ern: str = "") -> RedriveDlqResult:
         """Moves messages out of a dead letter queue and back onto the queues they came from.
