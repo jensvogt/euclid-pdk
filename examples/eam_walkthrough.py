@@ -44,9 +44,16 @@ def main(argv: list[str]) -> int:
 
         users = session.list_users(page_size=5)
         print(f"\n{users.total} user(s); first {len(users.users)}:")
+
+        # What a user may do is its own record now rather than a field on the user, so it is one
+        # request for the account rather than one per user.
+        grants = session.list_grants()
+        by_principal: dict[str, list[str]] = {}
+        for grant in grants.grants:
+            by_principal.setdefault(grant.principal, []).append(grant.role)
+
         for user in users.users:
-            namespaces = [ns for grant in user.account_grants for ns in grant.namespaces]
-            print(f"  {user.user_id:<16} {user.email:<28} namespaces={namespaces}")
+            print(f"  {user.user_id:<16} {user.email:<28} roles={by_principal.get(user.ern, [])}")
 
         # The secret comes back here and nowhere else, so anything that needs it has to keep it.
         created = session.create_access_key()

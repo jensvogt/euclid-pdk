@@ -17,8 +17,17 @@ So a file uploaded over FTP is an object in a bucket, with the events and the li
 object has: this is a protocol somebody's existing tooling already speaks, put in front of storage,
 rather than a second place files live.
 
-Every action here is administrator-only, server-side. :attr:`~euclid.EuclidSession.is_admin` says
-whether the logged-in user is one, though the server enforces it regardless.
+**Admitting a client is not the same as allowing it anything.** ``user_ids`` and ``user_groups``
+decide who may log in; what they may then *do* is decided by the roles granted to them, and it is
+deny by default. A newly listed user can log in and do nothing at all until a role reaches them -
+see :data:`TRANSFER_PERMISSIONS` and :meth:`euclid.EuclidSession.grant_role`. The client is never
+told why: a refusal is ``550 Permission denied`` or ``SSH_FX_PERMISSION_DENIED``, and the reason,
+which names roles and grants, goes to euclid's log.
+
+Every action *here* is administrator-only, server-side - which is a separate matter from what a
+transfer client may do, and deliberately so: somebody who may upload through a server must not be
+able to stop the server they upload through. :attr:`~euclid.EuclidSession.is_admin` says whether
+the logged-in user is an administrator, though the server enforces it regardless.
 """
 
 from __future__ import annotations
@@ -29,7 +38,7 @@ from ..dto.ets import TransferServer
 from .base import ModuleClient
 
 __all__ = ["EuclidEts", "TARGET", "FTP", "SFTP", "EVERY_INTERFACE",
-           "DEFAULT_PASV_MIN", "DEFAULT_PASV_MAX"]
+           "DEFAULT_PASV_MIN", "DEFAULT_PASV_MAX", "TRANSFER_PERMISSIONS", "TRANSFER_ROLE"]
 
 TARGET = "ets"
 
@@ -46,6 +55,35 @@ EVERY_INTERFACE = "0.0.0.0"
 #: naming rather than leaving to chance.
 DEFAULT_PASV_MIN = 6000
 DEFAULT_PASV_MAX = 6100
+
+#: What a transfer client may be granted, one permission per kind of command rather than per verb -
+#: so ``ets:list-directory`` covers FTP's LIST, NLST, CWD, CDUP, SIZE and MDTM as well as SFTP's
+#: OPENDIR, STAT and LSTAT. They are ``ets:`` permissions rather than a module of their own, because
+#: they belong to the module whose servers these are.
+#:
+#: The resource a grant narrows them to is the *transfer server's* ERN, not a path: a client is
+#: already confined to its home prefix, and a second path-shaped access model would be one too many
+#: to reason about.
+#:
+#: Deliberately not here: ``ets:start-server`` and the rest of the definition actions. A client that
+#: may upload must not be able to stop the server it uploads to.
+TRANSFER_PERMISSIONS = ("ets:list-directory", "ets:get-file", "ets:put-file", "ets:rename-file",
+                        "ets:delete-file", "ets:create-directory", "ets:delete-directory")
+
+#: The built-in role that holds all of :data:`TRANSFER_PERMISSIONS` *and* the four ESM actions those
+#: commands turn into - ``esm:list-objects``, ``esm:get-object``, ``esm:put-object`` and
+#: ``esm:delete-object``.
+#:
+#: It spans two modules on purpose. A transfer server stores nothing of its own, and every call it
+#: makes to ESM carries the client's own token, so ESM's own check applies underneath this one: a
+#: role holding only the ``ets:`` half passes the FTP check and is refused one layer down, which is
+#: a role that does not do what its name says. The same goes for narrowing a grant - the two halves
+#: are matched against different resources, so a grant scoped to the server's ERN alone refuses the
+#: ESM half. Name both ERNs.
+#:
+#: Many clients need nothing granted specially: ``reader`` already covers listing and downloading,
+#: and ``operator`` covers everything but the deletes.
+TRANSFER_ROLE = "transfer"
 
 
 class EuclidEts(ModuleClient):
@@ -78,9 +116,10 @@ class EuclidEts(ModuleClient):
         :param address: the interface to bind to; :data:`EVERY_INTERFACE` by default.
         :param home_directory: the key prefix a logged-in user lands in, which is what lets one
             bucket serve several servers without either seeing the other's files.
-        :param user_ids: the EAM users who may log in.
+        :param user_ids: the EAM users who may log in. Being listed here admits a client and
+            nothing more - see :data:`TRANSFER_ROLE` for what lets it do anything once in.
         :param user_groups: the groups whose members may - usually the better answer, since it
-            outlives the individual accounts.
+            outlives the individual accounts, and since a role can be granted to the same group.
         :param directories: key prefixes to present as directories, for the clients that will not
             show what they cannot list.
         :param host_key: SFTP only: the private SSH host key. Generated on first start when empty -
@@ -110,8 +149,15 @@ class EuclidEts(ModuleClient):
         The protocol is not here: which one a server speaks decides which process runs it, so
         changing it would be a different server. Neither is the state - see :meth:`start_server`.
 
-        A running server keeps running on its old definition until it is restarted, since the
-        process reads this once at startup.
+        **This restarts a running server.** The process reads its definition once, as it comes up,
+        and nothing can tell it afterwards - so the manager applies a change by starting it again,
+        within a few seconds of this call. That disconnects the clients on it and loses the
+        transfers under way; a client that retries succeeds. Editing a busy server is therefore not
+        free, and euclid says so in its log at warning level when it does it.
+
+        An update that changes nothing is free, though: the comparison is on the definition a
+        starting process would read, not on the fact that something was written, so re-sending a
+        setting the server already has restarts nothing.
         """
         payload: dict[str, Any] = {"serverId": server_id}
         if address is not None:

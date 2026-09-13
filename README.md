@@ -199,13 +199,69 @@ credentials file; the retry then has a fresh token to use.
 | `create_access_key`, `list_access_keys`, `delete_access_key` | the caller's own signing credentials |
 | `create_user_group`, `list_user_groups`, `delete_user_group`, `add_user_to_user_group`, `remove_user_from_user_group` | groups |
 | `create_account`, `list_accounts`, `delete_account` | accounts |
-| `create_namespace`, `list_namespaces`, `delete_namespace`, `grant_namespace_access`, `revoke_namespace_access` | namespaces |
+| `create_namespace`, `list_namespaces`, `delete_namespace` | namespaces |
+| `create_role`, `update_role`, `get_role`, `list_roles`, `delete_role` | what a set of permissions is called |
+| `grant_role`, `revoke_role`, `list_grants` | who may do what, and where |
+| `check_permission`, `list_permissions` | why a call was allowed or refused, and what can be granted at all |
 | `change_namespace` | which namespace this session is scoped to |
 | `metrics` | EAM's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 Several of these are administrator-only server-side; `session.is_admin` says whether the logged-in
-user is one, though the server enforces it regardless.
+user is one, though the server enforces it regardless. `list_permissions` is the exception among
+the role actions: it is the vocabulary rather than anybody's access, so anyone logged in may read it.
+
+### Roles and grants
+
+**A permission is the pair already on the wire** — `<module>:<action>`, exactly what
+`x-euclid-target` and `x-euclid-action` carry. A *role* is a named set of them; a *grant* gives one
+role to one principal, scoped to an account, its namespaces and — where it matters — its resource
+ERNs. What a user may do is the union of the grants held by them and by every group they are in.
+Nothing subtracts: there are no deny rules, which is what keeps "why can they do that" a question
+you read rather than evaluate.
+
+```python
+from euclid.modules.eam import ALL_NAMESPACES, BUILTIN_ROLES, EVERY_PERMISSION
+
+session.create_role("topic-publisher", ["ens:publish-message", "ens:list-topics"])
+
+grant = session.grant_role("topic-publisher", user.ern, namespaces=["production"],
+                           resources=["ern:ens:eu-central-1:000000000000:production:topic:order-*"])
+
+session.list_grants(principal=user.ern)      # what may they do
+session.list_grants(role="topic-publisher")  # who can do this
+session.list_grants()                        # everything granted in the account
+
+session.revoke_role(grant.grant_id)
+```
+
+Seven roles exist without anybody creating them — `BUILTIN_ROLES`, from `account-administrator`
+down to `transfer`. The first three are *computed* from the permission vocabulary by rule, so a
+module that gains an action gains it in `reader` and `operator` on the next server build; that is
+why none of the seven can be created, changed or deleted. There is deliberately no `administrator`
+role: installation administration is membership of the `administrator` user group, which is not a
+grant and is not scoped to an account.
+
+`list_permissions()` is the whole vocabulary, generated from what the modules actually dispatch —
+so a permission cannot be granted for an action that does not exist. It also names the modules that
+can never be granted at all (`emm`, `emd`), rather than leaving them silently missing; `*:*`
+(`EVERY_PERMISSION`) does not reach them either.
+
+`check_permission(user_id, target, action)` is the one that earns its place. It answers `allowed`,
+the `reason`, and the `role` whose grant decided — counting the groups the user belongs to, which
+`list_grants` on the user alone does not:
+
+```python
+answer = session.check_permission("order-service", "ens", "publish-message", namespace="production")
+if not answer.allowed:
+    print(answer.reason)   # e.g. no role granted here holds 'ens:publish-message'
+```
+
+**This replaced `accountGrants`.** `User` no longer carries an `account_grants` list, and
+`grant_namespace_access` / `revoke_namespace_access` are gone: a namespace grant is now a role
+binding scoped to that namespace, which is the same statement with the "what may they do there"
+part filled in rather than assumed. Listing what users may do is now one `list_grants()` for the
+account rather than a field on each user.
 
 ## What ESM covers
 
@@ -732,8 +788,43 @@ process, socket and log channel are named after, for the same reason EAP has one
 As in EAP, `desired_state` is what was asked for and `state` is what is observed, and
 `update_server` sends only what it names — a named list replaces the stored one rather than adding
 to it. The protocol is not updatable and so is not a parameter: which one a server speaks decides
-which process runs it, so changing it would be a different server. A running server keeps running on
-its old definition until it is restarted, since the process reads it once at startup.
+which process runs it, so changing it would be a different server.
+
+**`update_server` restarts a running server.** The process reads its definition once, as it comes
+up, and nothing can tell it afterwards — so the manager applies a change by starting it again,
+within a few seconds. That disconnects the clients on it and loses the transfers under way; a client
+that retries succeeds. An update that changes nothing is still free, because the comparison is on
+the definition a starting process would read rather than on the fact that something was written.
+
+**Admitting a client is not the same as allowing it anything.** `user_ids` and `user_groups` decide
+who may log in; what a client may then *do* — list, download, upload, rename, delete — is decided by
+the roles granted to it, and it is deny by default. A newly listed user can log in and do nothing:
+
+```python
+from euclid.modules.ets import TRANSFER_PERMISSIONS, TRANSFER_ROLE
+
+session.grant_role(TRANSFER_ROLE, group.ern, namespaces=["production"])
+```
+
+`TRANSFER_PERMISSIONS` is the seven, one per kind of command rather than per verb — so
+`ets:list-directory` covers FTP's LIST, NLST, CWD, CDUP, SIZE and MDTM as well as SFTP's OPENDIR,
+STAT and LSTAT. Grant fewer than all seven to narrow what a client may do. Narrowing *where* is by
+the transfer server's ERN rather than by path: a client is already confined to its home prefix, and
+a second path-shaped access model would be one too many to reason about.
+
+The `transfer` role spans two modules on purpose — the seven `ets:` permissions plus
+`esm:list-objects`, `esm:get-object`, `esm:put-object` and `esm:delete-object`. A transfer server
+stores nothing of its own and every call it makes to ESM carries the client's own token, so ESM's
+own check applies underneath this one; a role holding only the `ets:` half passes the FTP check and
+is refused one layer down. The same goes for scoping a grant: the two halves are matched against
+different resources, so name both the server's ERN and the bucket's. Many clients need nothing
+granted specially, since `reader` already covers listing and downloading and `operator` covers
+everything but the deletes.
+
+Note that none of this is `session.ets()`'s own administrator-only rule, and the separation is
+deliberate: somebody who may upload through a server must not be able to stop the server they
+upload through. A refused client is never told why — it gets `550 Permission denied` or
+`SSH_FX_PERMISSION_DENIED`, and the reason, which names roles and grants, goes to euclid's log.
 
 ## Writing a module of your own
 

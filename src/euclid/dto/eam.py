@@ -16,6 +16,7 @@ from typing import Any
 
 # Aliased rather than imported under their own names so that the parsing below reads as it did when
 # these lived here: they moved to be shared with the other modules' response types, not to change.
+from ._json import documents as _documents
 from ._json import flag as _flag
 from ._json import number as _number
 from ._json import strings as _strings
@@ -24,7 +25,12 @@ from ._json import text as _text
 __all__ = [
     "Metadata",
     "AccessKey",
-    "AccountGrant",
+    "Role",
+    "ListRolesResult",
+    "Grant",
+    "ListGrantsResult",
+    "PermissionCheck",
+    "PermissionVocabulary",
     "User",
     "UserGroup",
     "Account",
@@ -66,18 +72,139 @@ class AccessKey:
 
 
 @dataclass
-class AccountGrant:
-    """What a user may reach in one account: which namespaces, and whether they administer it."""
+class Role:
+    """A named set of permissions, belonging to one account.
 
+    ``builtin`` says whether this is one of the roles every installation has without anybody
+    creating them, which is what decides whether it can be changed: the built-ins are computed from
+    the permission vocabulary rather than stored, so create, update and delete all refuse them. A
+    caller that had to know the seven names to work that out would go stale the day an eighth
+    appears.
+    """
+
+    name: str = ""
+    ern: str = ""
     account_id: str = ""
-    namespaces: list[str] = field(default_factory=list)
-    is_admin: bool = False
-    granted: str = ""
+    region: str = ""
+    description: str = ""
+    permissions: list[str] = field(default_factory=list)
+    builtin: bool = False
+    created: str = ""
+    modified: str = ""
 
     @staticmethod
-    def from_json(document: Any) -> "AccountGrant":
-        return AccountGrant(_text(document, "accountId"), _strings(document, "namespaces"),
-                            _flag(document, "isAdmin"), _text(document, "granted"))
+    def from_json(document: Any) -> "Role":
+        return Role(_text(document, "name"), _text(document, "ern"), _text(document, "accountId"),
+                    _text(document, "region"), _text(document, "description"),
+                    _strings(document, "permissions"), _flag(document, "builtin"),
+                    _text(document, "created"), _text(document, "modified"))
+
+
+@dataclass
+class ListRolesResult:
+    """One page of an account's own roles, with the built-ins in front of it.
+
+    ``total`` counts the stored roles only, and the built-ins are outside the paging entirely -
+    they are computed rather than stored, so there is no page to put them on. A caller paging
+    through sees the same seven at the top of every page, which is the honest rendering of
+    something that belongs to no page.
+    """
+
+    roles: list[Role] = field(default_factory=list)
+    total: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "ListRolesResult":
+        return ListRolesResult([Role.from_json(r) for r in _documents(document, "roles")],
+                               _number(document, "total"))
+
+
+@dataclass
+class Grant:
+    """One role, given to one principal, somewhere.
+
+    The only thing that grants anything, and the only thing that carries scope. Replaced the
+    per-user ``accountGrants``/``resourceGrants`` lists: what a user may do is the union of the
+    grants held by them and by every group they belong to.
+
+    ``grant_id`` is what :meth:`~euclid.modules.eam.EuclidSession.revoke_role` takes - not the
+    (role, principal) pair, since the same role may be granted to the same principal twice with
+    different scope and revoking has to say which.
+    """
+
+    grant_id: str = ""
+    role: str = ""
+    principal: str = ""
+    account_id: str = ""
+    namespaces: list[str] = field(default_factory=list)
+    resources: list[str] = field(default_factory=list)
+    granted: str = ""
+    granted_by: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "Grant":
+        return Grant(_text(document, "grantId"), _text(document, "role"), _text(document, "principal"),
+                     _text(document, "accountId"), _strings(document, "namespaces"),
+                     _strings(document, "resources"), _text(document, "granted"),
+                     _text(document, "grantedBy"))
+
+
+@dataclass
+class ListGrantsResult:
+    """The grants matching a principal, a role, or a whole account."""
+
+    grants: list[Grant] = field(default_factory=list)
+    total: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "ListGrantsResult":
+        return ListGrantsResult([Grant.from_json(g) for g in _documents(document, "grants")],
+                                _number(document, "total"))
+
+
+@dataclass
+class PermissionCheck:
+    """Whether a user would be allowed to do something, and what decided it.
+
+    ``reason`` is the point of the whole action. A permission system that cannot say *why* gets
+    worked around by making everybody an administrator, so the answer names what applied: the
+    administrator group, the grant that matched, or the absence of one.
+
+    ``role`` is the role whose grant allowed it, and is empty on a refusal - and on an allow that
+    no grant decided, which is what an installation administrator's looks like.
+    """
+
+    allowed: bool = False
+    reason: str = ""
+    role: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "PermissionCheck":
+        return PermissionCheck(_flag(document, "allowed"), _text(document, "reason"),
+                               _text(document, "role"))
+
+
+@dataclass
+class PermissionVocabulary:
+    """Every permission a role can hold, as ``<module>:<action>``.
+
+    Derived from what the modules actually dispatch rather than written by hand, so a permission
+    cannot be granted for an action that does not exist and a new action cannot be left out.
+
+    ``unbindable_modules`` is why something is missing rather than a gap: EMM exposes every
+    module's process pool and raw collections, and EMD *is* the document store and would let a
+    caller past every check the owning module makes. No role names their actions, and ``*:*`` does
+    not reach them. Naming them here means the listing describes exactly what can be granted.
+    """
+
+    permissions: list[str] = field(default_factory=list)
+    modules: list[str] = field(default_factory=list)
+    unbindable_modules: list[str] = field(default_factory=list)
+
+    @staticmethod
+    def from_json(document: Any) -> "PermissionVocabulary":
+        return PermissionVocabulary(_strings(document, "permissions"), _strings(document, "modules"),
+                                    _strings(document, "unbindableModules"))
 
 
 @dataclass
@@ -90,17 +217,14 @@ class User:
     email: str = ""
     account_id: str = ""
     region: str = ""
-    account_grants: list[AccountGrant] = field(default_factory=list)
     created: str = ""
     modified: str = ""
 
     @staticmethod
     def from_json(document: Any) -> "User":
-        grants = document.get("accountGrants") if isinstance(document, dict) else None
         return User(
             _text(document, "userId"), _text(document, "ern"), _text(document, "password"),
             _text(document, "email"), _text(document, "accountId"), _text(document, "region"),
-            [AccountGrant.from_json(g) for g in grants] if isinstance(grants, list) else [],
             _text(document, "created"), _text(document, "modified"))
 
 

@@ -21,8 +21,10 @@ from ..credentials import CachedCredentials, is_token_valid
 from ..credentials import load as load_credentials
 from ..credentials import save as save_credentials
 from ..credentials import update_namespace as update_cached_namespace
-from ..dto.eam import (AccessKey, Account, CreateAccessKeyResult, ListAccountsResult, ListNamespacesResult,
-                       ListUserGroupsResult, ListUsersResult, LoginResult, Namespace, User, UserGroup)
+from ..dto.eam import (AccessKey, Account, CreateAccessKeyResult, Grant, ListAccountsResult,
+                       ListGrantsResult, ListNamespacesResult, ListRolesResult, ListUserGroupsResult,
+                       ListUsersResult, LoginResult, Namespace, PermissionCheck,
+                       PermissionVocabulary, Role, User, UserGroup)
 from ..exceptions import EuclidAuthenticationError, EuclidServiceError
 from ..http.client import DEFAULT_CA_CERT_PATH, DEFAULT_TIMEOUT, EuclidHttpClient
 from ..url import authority_of, host_header_of, scheme_of, strip_trailing_slash
@@ -39,7 +41,8 @@ if TYPE_CHECKING:  # pragma: no cover - the runtime imports are inside the metho
     from .ess import EuclidEss
     from .ets import EuclidEts
 
-__all__ = ["EuclidEam", "EuclidSession", "TARGET"]
+__all__ = ["EuclidEam", "EuclidSession", "TARGET", "AUTH_AUTO", "AUTH_SIGNATURE", "AUTH_BEARER",
+           "BUILTIN_ROLES", "EVERY_PERMISSION", "ALL_NAMESPACES", "ALL_RESOURCES"]
 
 TARGET = "eam"
 
@@ -51,6 +54,35 @@ AUTH_AUTO = "auto"
 AUTH_SIGNATURE = "signature"
 #: Always present the bearer token, even when an access key is available.
 AUTH_BEARER = "bearer"
+
+#: The roles every installation has without anybody creating them, so that granting somebody the
+#: right to publish does not mean writing out most of the vocabulary. They are computed rather than
+#: stored - the first three from the vocabulary by rule, so a module that gains an action gains it
+#: in them on the next build - which is why none of them can be created, changed or deleted.
+#:
+#: ``account-administrator`` is everything within one account, and is the strongest thing a role can
+#: say; ``operator`` is everything but the ``delete-`` and ``purge-`` actions and ``eam``;
+#: ``reader`` is the ``list-``, ``get-`` and ``describe-`` actions; ``publisher`` and ``consumer``
+#: are the two ends of a queue or topic; ``application`` is what EAP gives a deployed application,
+#: and is meant to be granted with an explicit resource list; ``transfer`` is what an FTP or SFTP
+#: client needs - see :mod:`euclid.modules.ets`.
+#:
+#: There is deliberately no ``administrator`` role: installation administration is membership of the
+#: ``administrator`` user group, which is not a grant and is not scoped to an account.
+BUILTIN_ROLES = ("account-administrator", "operator", "reader", "publisher", "consumer",
+                 "application", "transfer")
+
+#: Every action of every bindable module. One of the two wildcards a permission may use, the other
+#: being ``"<module>:*"``; there is no ``ens:read-*``, because somebody would have to decide whether
+#: ``get-message-count`` is a read. It does not reach ``emm`` or ``emd``, which no role can name at
+#: all - see :meth:`EuclidSession.list_permissions`.
+EVERY_PERMISSION = "*:*"
+
+#: What a grant's ``namespaces`` says to apply it in every namespace of the account.
+ALL_NAMESPACES = ("*",)
+
+#: What a grant's ``resources`` says to apply it to every resource, rather than to named ERNs.
+ALL_RESOURCES = ("*",)
 
 
 class EuclidEam:
@@ -432,13 +464,164 @@ class EuclidSession:
         """Deletes a namespace. Requires admin rights on the account, and no grants may remain."""
         self._call("delete-namespace", {"accountId": account_id, "name": name})
 
-    def grant_namespace_access(self, user: str, account_id: str, namespace: str) -> None:
-        """Grants a user access to a namespace. Requires admin rights on the account."""
-        self._call("grant-namespace-access", {"user": user, "accountId": account_id, "namespace": namespace})
+    # -- roles -------------------------------------------------------------------------------
 
-    def revoke_namespace_access(self, user: str, account_id: str, namespace: str) -> None:
-        """Revokes a user's access to a namespace. Requires admin rights on the account."""
-        self._call("revoke-namespace-access", {"user": user, "accountId": account_id, "namespace": namespace})
+    def create_role(self, name: str, permissions: list[str], description: str = "") -> Role:
+        """Creates a role of this account: a named set of permissions, and nothing else.
+
+        A role grants; nothing subtracts. What a principal may do is the union of every role
+        granted to them and to the groups they belong to, which is what makes "why can they do
+        that" answerable by reading rather than by working out an order of precedence.
+
+        :param permissions: ``<module>:<action>`` pairs, exactly as they travel on the wire -
+            ``ens:publish-message``, ``eqs:receive-messages``. Two wildcards and no others:
+            ``ens:*`` for one module, :data:`EVERY_PERMISSION` for all of them.
+            :meth:`list_permissions` is the whole vocabulary.
+        :raises ValueError: if no permission is given. A role with none grants nothing, which is a
+            mistake rather than a configuration, and the server says so too.
+
+        The server refuses a permission no module answers, and refuses one of the built-in names -
+        a stored role may not shadow a built-in, since a grant resolves the account's own roles
+        first and would silently replace it for that account alone.
+        """
+        if not permissions:
+            raise ValueError("a role with no permissions grants nothing; give it at least one")
+        return Role.from_json(self._call("create-role", {
+            "name": name, "description": description, "permissions": permissions}).get("role", {}))
+
+    def update_role(self, name: str, permissions: list[str], description: str = "") -> Role:
+        """Replaces a role's permissions, and returns it as it now stands.
+
+        Replaces rather than merges: a permission left out is taken away, which is the only way to
+        narrow a role at all. Read it with :meth:`get_role` first if the intent is to add one.
+
+        The built-ins cannot be changed - they are computed from the vocabulary rather than stored,
+        so a module that gains an action gains it in ``reader`` and ``operator`` on the next build,
+        and an edited copy would go stale instead.
+
+        :raises ValueError: if no permission is given, for the reason :meth:`create_role` gives.
+        """
+        if not permissions:
+            raise ValueError("a role with no permissions grants nothing; give it at least one")
+        return Role.from_json(self._call("update-role", {
+            "name": name, "description": description, "permissions": permissions}).get("role", {}))
+
+    def get_role(self, name: str) -> Role:
+        """One role and its permissions - the account's own first, then the built-ins.
+
+        That order is the one a grant resolves in, so what comes back is what a grant of this name
+        would actually use rather than what the two lookups might separately say.
+        """
+        return Role.from_json(self._call("get-role", {"name": name}).get("role", {}))
+
+    def list_roles(self, prefix: str = "", page_size: int = 10, page_index: int = 0,
+                   sort_column: str = "name", sort_direction: str = "asc",
+                   include_builtin: bool = True) -> ListRolesResult:
+        """The roles that can be granted here: the built-ins, then this account's own.
+
+        The built-ins come first and sit outside the paging - see
+        :class:`~euclid.dto.eam.ListRolesResult` - and ``include_builtin=False`` leaves them out
+        for a caller listing only what this account wrote.
+        """
+        return ListRolesResult.from_json(self._call("list-roles", {
+            "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
+            "sortColumn": sort_column, "sortDirection": sort_direction,
+            "includeBuiltin": include_builtin}))
+
+    def delete_role(self, name: str) -> None:
+        """Deletes a role of this account.
+
+        Refused while any grant still names it, rather than cascading: deleting a role out from
+        under its grants would leave grants that quietly do nothing, and taking away somebody's
+        access is a decision to make on purpose. ``list_grants(role=name)`` is who holds it.
+
+        The built-ins cannot be deleted either.
+        """
+        self._call("delete-role", {"name": name})
+
+    # -- grants ------------------------------------------------------------------------------
+
+    def grant_role(self, role: str, principal: str, namespaces: list[str] | None = None,
+                   resources: list[str] | None = None, account_id: str = "") -> Grant:
+        """Gives a role to a user or a user group, scoped.
+
+        Replaced ``grant_namespace_access``: access to a namespace is now a role granted in it, so
+        the same call says *what* the principal may do there as well as *where*.
+
+        :param role: a role of the account, or one of the built-ins - see :data:`BUILTIN_ROLES`.
+        :param principal: a user ERN or a user-group ERN. One argument for both, because the ERN
+            says which.
+        :param namespaces: namespaces of the account it applies in; :data:`ALL_NAMESPACES`, the
+            default, means every one of them.
+        :param resources: ERN patterns it applies to, each exact or ending in ``*``;
+            :data:`ALL_RESOURCES`, the default, means every resource.
+        :param account_id: the account to grant in, your own unless given. Naming another needs
+            administrator rights on it.
+        :returns: the grant, whose ``grant_id`` is what :meth:`revoke_role` takes.
+        :raises ValueError: if ``namespaces`` is given as an empty list. That grants nothing at
+            all, and passing it is a mistake rather than a scoping - say
+            :data:`ALL_NAMESPACES` for every namespace of the account.
+
+        The role and the principal both have to exist at this moment: a grant naming either one
+        that does not is inert, and nobody would find out until somebody was refused something
+        they had been told they had.
+        """
+        if namespaces is not None and not namespaces:
+            raise ValueError("namespaces is required; use ALL_NAMESPACES for every namespace of "
+                             "the account")
+        return Grant.from_json(self._call("grant-role", {
+            "role": role, "principal": principal, "accountId": account_id,
+            "namespaces": namespaces if namespaces is not None else list(ALL_NAMESPACES),
+            "resources": resources if resources is not None else list(ALL_RESOURCES)}).get(
+                "grant", {}))
+
+    def revoke_role(self, grant_id: str) -> None:
+        """Removes one grant, by its own id.
+
+        Not by role and principal: the same role may be granted to the same principal twice with
+        different scope, and revoking has to say which. :meth:`list_grants` shows the ids.
+        """
+        self._call("revoke-role", {"grantId": grant_id})
+
+    def list_grants(self, principal: str = "", role: str = "", account_id: str = "") -> ListGrantsResult:
+        """Lists grants: by principal, by role, or - giving neither - a whole account.
+
+        The two questions this model exists to answer are "what may they do" and "who can do this";
+        giving neither answers a third, "what is granted here at all", which is what an overview
+        wants and what one request per user would otherwise cost.
+
+        Note that ``principal`` shows that principal's *own* grants and not those of the groups it
+        belongs to, which is a different question - :meth:`check_permission` answers the combined
+        one.
+        """
+        return ListGrantsResult.from_json(self._call("list-grants", {
+            "principal": principal, "role": role, "accountId": account_id}))
+
+    def check_permission(self, user_id: str, target: str, action: str, namespace: str = "",
+                         resource_ern: str = "") -> PermissionCheck:
+        """Asks whether a user would be allowed to do something, and says why.
+
+        The verdict, what decided it, and the role whose grant did - counting the grants of every
+        group the user belongs to, which is what :meth:`list_grants` on the user alone does not.
+
+        ``target`` and ``action`` are the pair that travels on the wire: ``check_permission(user,
+        "ens", "publish-message")``.
+        """
+        return PermissionCheck.from_json(self._call("check-permission", {
+            "userId": user_id, "target": target, "action": action,
+            "namespace": namespace, "resourceErn": resource_ern}))
+
+    def list_permissions(self) -> PermissionVocabulary:
+        """Every permission a role can hold, as ``<module>:<action>``.
+
+        Generated from what the modules actually dispatch, so it is exactly what can be granted -
+        and the two modules that are never grantable, ``emd`` and ``emm``, are named separately
+        rather than silently missing.
+
+        The one role action any logged-in user may call: it is the vocabulary rather than
+        anybody's access, so asking what *could* be granted asks nothing private.
+        """
+        return PermissionVocabulary.from_json(self._call("list-permissions", {}))
 
     # -- monitoring --------------------------------------------------------------------------
 

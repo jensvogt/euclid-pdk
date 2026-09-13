@@ -89,8 +89,14 @@ def walk(esm, ets, bucket_ern: str, name: str, start: bool) -> None:
     # Only what is named changes; the port, the bucket and the home directory stay as they are.
     widened = ets.update_server(name, user_groups=["administrators"])
     print(f"\nadded a group: {widened.user_groups}")
-    print("  a running server keeps its old definition until it is restarted - the process reads "
-          "this once, at startup")
+    print("  the process reads its definition once, at startup, so euclid applies this by "
+          "restarting the server -")
+    print("  which drops whatever transfers are in flight. Free here, since it is not running yet.")
+
+    # And being listed is only admission. What a client may do is whatever role reaches it, which
+    # is nothing until one does - see euclid.modules.ets.TRANSFER_ROLE.
+    print(f"  who may log in: users {widened.user_ids}, groups {widened.user_groups} - "
+          "what they may then do is a grant")
 
     # A file put here over SFTP would be exactly this object: one bucket, two ways in.
     esm.put_object(bucket_ern, "incoming/2026/hello.txt", b"as if uploaded over SFTP\n")

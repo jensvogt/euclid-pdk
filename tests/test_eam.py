@@ -263,11 +263,8 @@ def test_list_users_parses_the_response(gateway):
                                      "sortColumn": "userId", "sortDirection": "desc"}
     assert result.total == 2
     assert [user.user_id for user in result.users] == ["jens", "alice"]
-    assert result.users[0].account_grants[0].namespaces == ["development"]
-    assert result.users[0].account_grants[0].is_admin
     # A field the server did not send reads as empty rather than raising.
     assert result.users[1].email == ""
-    assert result.users[1].account_grants == []
 
 
 def test_accounts_groups_and_namespaces_round_trip(gateway):
@@ -407,3 +404,192 @@ def test_call_reaches_an_action_this_sdk_does_not_wrap(gateway):
 
     assert gateway.last().json() == {"x": 1}
     assert gateway.last().auth == "sigv4"
+
+
+# ── Roles and grants ────────────────────────────────────────────────────────
+#
+# What a user may do used to arrive on the user, as an ``accountGrants`` array. It is its own record
+# now, so the SDK asks for it separately - and the call that grants one says what the principal may
+# do as well as where, which ``grant_namespace_access`` never did.
+
+
+def test_granting_a_role_answers_with_the_id_that_revokes_it(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "grant-role", {"grant": {"grantId": "g-1", "role": "operator",
+                                                   "principal": "ern:...:user/jens",
+                                                   "accountId": "000000000000",
+                                                   "namespaces": ["production"],
+                                                   "resources": ["*"]}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        grant = session.grant_role("operator", "ern:...:user/jens", namespaces=["production"])
+
+    assert gateway.last().json() == {"role": "operator", "principal": "ern:...:user/jens",
+                                     "accountId": "", "namespaces": ["production"], "resources": ["*"]}
+    assert grant.grant_id == "g-1"
+    assert grant.namespaces == ["production"]
+
+
+def test_granting_defaults_to_every_namespace_and_resource(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "grant-role", {"grant": {"grantId": "g-2"}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        session.grant_role("reader", "ern:...:usergroup/auditors")
+
+    assert gateway.last().json()["namespaces"] == ["*"]
+    assert gateway.last().json()["resources"] == ["*"]
+
+
+def test_revoking_takes_the_grant_id(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "revoke-role", {})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        session.revoke_role("g-1")
+
+    assert gateway.last().json() == {"grantId": "g-1"}
+
+
+def test_listing_grants_with_neither_argument_asks_for_the_account(gateway):
+    """The third question - what is granted here at all - which one request per user would
+    otherwise cost."""
+    prepared(gateway)
+    gateway.answer("eam", "list-grants", {"grants": [{"grantId": "g-1", "role": "operator",
+                                                      "principal": "ern:...:user/jens",
+                                                      "namespaces": ["production"]}], "total": 1})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        result = session.list_grants()
+
+    assert gateway.last().json() == {"principal": "", "role": "", "accountId": ""}
+    assert result.total == 1
+    assert result.grants[0].role == "operator"
+    assert result.grants[0].grant_id == "g-1"
+
+
+def test_check_permission_answers_with_the_reason(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "check-permission", {"allowed": False,
+                                               "reason": "no role granted here holds 'ens:publish-message'",
+                                               "role": ""})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        answer = session.check_permission("order-service", "ens", "publish-message", namespace="production")
+
+    assert gateway.last().json() == {"userId": "order-service", "target": "ens",
+                                     "action": "publish-message", "namespace": "production",
+                                     "resourceErn": ""}
+    assert answer.allowed is False
+    assert "ens:publish-message" in answer.reason
+    # Empty on a refusal, and on an allow that no grant decided - an administrator's.
+    assert answer.role == ""
+
+
+def test_creating_a_role_sends_the_permissions_as_the_wire_names_them(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "create-role", {"role": {
+        "name": "topic-publisher", "ern": "ern:eam:eu-central-1:000000000000::role/topic-publisher",
+        "accountId": "000000000000", "description": "May publish to topics",
+        "permissions": ["ens:publish-message", "ens:list-topics"], "created": "2026-09-13"}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        role = session.create_role("topic-publisher", ["ens:publish-message", "ens:list-topics"],
+                                   description="May publish to topics")
+
+    assert gateway.last().json() == {"name": "topic-publisher", "description": "May publish to topics",
+                                     "permissions": ["ens:publish-message", "ens:list-topics"]}
+    assert role.permissions == ["ens:publish-message", "ens:list-topics"]
+    # Not one of the computed ones, so it is a role this account may change.
+    assert role.builtin is False
+
+
+def test_a_role_with_no_permissions_says_so_before_the_round_trip(gateway):
+    """It would grant nothing, which is a mistake rather than a configuration."""
+    prepared(gateway)
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        for empty in ([], ()):
+            with pytest.raises(ValueError, match="grants nothing"):
+                session.create_role("useless", list(empty))
+            with pytest.raises(ValueError, match="grants nothing"):
+                session.update_role("useless", list(empty))
+
+    assert [r for r in gateway.requests if r.action in ("create-role", "update-role")] == []
+
+
+def test_updating_a_role_replaces_its_permissions(gateway):
+    """Replaces rather than merges - leaving one out takes it away, which is the only way to
+    narrow a role at all."""
+    prepared(gateway)
+    gateway.answer("eam", "update-role", {"role": {"name": "topic-publisher",
+                                                   "permissions": ["ens:publish-message"]}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        role = session.update_role("topic-publisher", ["ens:publish-message"])
+
+    assert gateway.last().json()["permissions"] == ["ens:publish-message"]
+    assert role.permissions == ["ens:publish-message"]
+
+
+def test_getting_and_deleting_a_role(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "get-role", {"role": {"name": "operator", "builtin": True,
+                                                "permissions": ["ens:publish-message"]}})
+    gateway.answer("eam", "delete-role", {})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        role = session.get_role("operator")
+        assert gateway.last().json() == {"name": "operator"}
+        # Which is what says it cannot be changed here, without the caller knowing the seven names.
+        assert role.builtin is True
+
+        session.delete_role("topic-publisher")
+        assert gateway.last().json() == {"name": "topic-publisher"}
+
+
+def test_listing_roles_puts_the_builtins_outside_the_paging(gateway):
+    """``total`` counts the stored roles; the built-ins are computed rather than stored, so there
+    is no page to put them on and they come back in front of every one."""
+    prepared(gateway)
+    gateway.answer("eam", "list-roles", {"roles": [
+        {"name": "account-administrator", "builtin": True, "permissions": ["*:*"]},
+        {"name": "topic-publisher", "permissions": ["ens:publish-message"]},
+    ], "total": 1})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        result = session.list_roles(prefix="t", page_size=25)
+
+    assert gateway.last().json() == {"prefix": "t", "pageSize": 25, "pageIndex": 0,
+                                     "sortColumn": "name", "sortDirection": "asc",
+                                     "includeBuiltin": True}
+    assert result.total == 1 and len(result.roles) == 2
+    assert [role.builtin for role in result.roles] == [True, False]
+
+
+def test_list_permissions_names_what_cannot_be_granted_at_all(gateway):
+    """Rather than leaving emm and emd silently missing from a listing that claims to be the whole
+    vocabulary."""
+    prepared(gateway)
+    gateway.answer("eam", "list-permissions", {
+        "permissions": ["ens:publish-message", "eqs:receive-messages"],
+        "modules": ["ens", "eqs"], "unbindableModules": ["emd", "emm"]})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        vocabulary = session.list_permissions()
+
+    assert vocabulary.permissions == ["ens:publish-message", "eqs:receive-messages"]
+    assert vocabulary.unbindable_modules == ["emd", "emm"]
+    assert "emm" not in vocabulary.modules
+
+
+def test_a_grant_scoped_to_no_namespace_says_so_before_the_round_trip(gateway):
+    """An empty list grants nothing anywhere. The default is every namespace, which is a different
+    thing to have asked for, so the empty list is refused rather than quietly widened."""
+    prepared(gateway)
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        with pytest.raises(ValueError, match="ALL_NAMESPACES"):
+            session.grant_role("operator", "ern:...:user/jens", namespaces=[])
+
+    assert [r for r in gateway.requests if r.action == "grant-role"] == []
