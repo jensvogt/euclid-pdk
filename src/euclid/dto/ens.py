@@ -240,6 +240,29 @@ class TopicStateResult:
                                 _json.number(document, "released"))
 
 
+@dataclass(frozen=True)
+class ResendResult:
+    """What a resend handed over, and what it passed by.
+
+    ``held`` is the number that says a resend was not the right command: those messages were
+    published while the topic was stopped and have never been delivered at all, so
+    :meth:`EuclidEns.start_topic` is what releases them. A resend leaves them alone, because
+    delivering one from here would hand it over without marking it delivered and the next start
+    would deliver it a second time.
+    """
+
+    ern: str = ""
+    #: How many messages went to the topic's subscriptions again.
+    resent: int = 0
+    #: How many were passed over as never having been delivered.
+    held: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "ResendResult":
+        return ResendResult(_json.text(document, "ern"), _json.number(document, "resent"),
+                            _json.number(document, "held"))
+
+
 @dataclass
 class TopicRetentionResult:
     """A topic's retention period after setting it, in seconds.

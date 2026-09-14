@@ -96,6 +96,33 @@ def test_starting_a_topic_delivers_what_it_held(gateway, ens):
     assert (started.status, started.released) == (RUNNING, 137)
 
 
+def test_resending_hands_the_topics_messages_over_again(gateway, ens):
+    """The way back to what a topic still holds, for a subscriber that was down or subscribed late."""
+    gateway.answer("ens", "resend-messages", {"ern": TOPIC, "resent": 42, "held": 0})
+
+    result = ens.resend_messages(TOPIC)
+
+    assert gateway.last().json() == {"ern": TOPIC, "messageId": ""}
+    assert (result.ern, result.resent, result.held) == (TOPIC, 42, 0)
+
+
+def test_resending_one_message_is_what_a_busy_topic_wants(gateway, ens):
+    """A resend goes to every subscriber, so replaying one message is usually the right blast radius."""
+    gateway.answer("ens", "resend-messages", {"ern": TOPIC, "resent": 1, "held": 0})
+
+    assert ens.resend_messages(TOPIC, message_id="m-7").resent == 1
+    assert gateway.last().json() == {"ern": TOPIC, "messageId": "m-7"}
+
+
+def test_resending_reports_what_it_passed_over_as_held(gateway, ens):
+    """Held messages were never delivered at all - start_topic releases those, not this."""
+    gateway.answer("ens", "resend-messages", {"ern": TOPIC, "resent": 0, "held": 12})
+
+    result = ens.resend_messages(TOPIC)
+
+    assert (result.resent, result.held) == (0, 12)
+
+
 def test_starting_a_topic_that_was_never_stopped_releases_nothing(gateway, ens):
     """Not an error: there is nothing held, so there is nothing to hand over."""
     gateway.answer("ens", "start-topic", {"ern": TOPIC, "status": "RUNNING", "released": 0})

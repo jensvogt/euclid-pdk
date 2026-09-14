@@ -30,8 +30,9 @@ from typing import Any, Mapping
 
 from ..dto.com import Variant
 from ..dto.ens import (CreateTopicResult, ListTopicsResult, MessageAttribute, MessageCount,
-                       MessagesResult, SubscribeResult, Subscription, TopicMaxMessageLengthResult,
-                       TopicMetadata, TopicRetentionResult, TopicStateResult)
+                       MessagesResult, ResendResult, SubscribeResult, Subscription,
+                       TopicMaxMessageLengthResult, TopicMetadata, TopicRetentionResult,
+                       TopicStateResult)
 from .base import ModuleClient
 
 __all__ = ["EuclidEns", "TARGET", "QUEUE", "DEFAULT_MAX_MESSAGE_LENGTH", "RUNNING", "STOPPED",
@@ -133,6 +134,30 @@ class EuclidEns(ModuleClient):
         """
         return TopicStateResult.from_json(self._call("start-topic", {"ern": ern}))
 
+    def resend_messages(self, ern: str, message_id: str = "") -> ResendResult:
+        """Hands what a topic still holds to its subscribers again, oldest first.
+
+        A topic is not consumed the way a queue is: publishing fans a message out there and then,
+        and what stays behind is the record of what was published - kept for the topic's retention
+        period, and once a subscriber has consumed the queue message it received, that record is the
+        only copy left. This is the way back to it for a subscriber that was down, one subscribed
+        after the fact, or one that acknowledged a message and then failed to process it.
+
+        **It goes to every subscriber**, not only the one that missed something. A consumer that is
+        idempotent does not care; one that is not will double-process. On a busy topic, name a
+        single ``message_id`` rather than replaying a fortnight of traffic to everybody.
+
+        Messages held because the topic was stopped are not resent - they have never been delivered
+        at all, and :meth:`start_topic` is what releases them and marks them delivered. They are
+        counted in the result's ``held`` instead. A stopped topic is refused outright, for the same
+        reason: it delivers nothing by somebody's decision, and this would be the way around that.
+
+        :param message_id: resend only this message, as :meth:`list_messages` reports its id; empty
+            resends everything the topic holds. One belonging to another topic is refused rather
+            than fanned out to subscriptions it was never published to.
+        """
+        return ResendResult.from_json(self._call("resend-messages", {"ern": ern, "messageId": message_id}))
+
     def set_topic_retention(self, ern: str, retention_period: int) -> TopicRetentionResult:
         """Sets how long a message published to this topic is kept, in seconds.
 
@@ -225,7 +250,7 @@ class EuclidEns(ModuleClient):
         independently: a subscriber that is slow or stopped delays nobody else, and a message
         already delivered is not withdrawn if the subscription is later removed.
 
-        ``priority`` is ``"LOW"``, ``"MIDDLE"`` or ``"HIGH"``, and travels with the message onto
+        ``priority`` is ``"LOW"``, ``"MEDIUM"`` or ``"HIGH"``, and travels with the message onto
         the queues it is delivered to.
         """
         payload: dict[str, Any] = {"ern": topic_ern, "body": body,

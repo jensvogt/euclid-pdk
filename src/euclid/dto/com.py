@@ -15,13 +15,13 @@ from typing import Any, Mapping
 from . import _json
 
 __all__ = ["Variant", "INT", "LONG", "DOUBLE", "FLOAT", "BOOL", "STRING", "BINARY",
-           "PRIORITY_LOW", "PRIORITY_MIDDLE", "PRIORITY_HIGH"]
+           "PRIORITY_LOW", "PRIORITY_MEDIUM", "PRIORITY_HIGH"]
 
 #: What a message is delivered at, and the only three values euclid accepts. Shared for the same
 #: reason :class:`Variant` is: a queue message, a topic message and the ``priority`` system
 #: attribute of a stored object all mean the same thing by it.
 PRIORITY_LOW = "LOW"
-PRIORITY_MIDDLE = "MIDDLE"
+PRIORITY_MEDIUM = "MEDIUM"
 PRIORITY_HIGH = "HIGH"
 
 #: The type tags ``Euclid::Dto::COM::Variant`` round-trips a value through.

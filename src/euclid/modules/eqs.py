@@ -104,7 +104,7 @@ class EuclidEqs(ModuleClient):
         :param dlq_name: the name of the queue that failed messages end up on.
         :param delay: how long a sent message waits before it can be received at all, in seconds.
         :param priority: the priority every message of this queue gets unless :meth:`send_message`
-            overrides it - ``"LOW"``, ``"MIDDLE"`` or ``"HIGH"``, and the server's default when
+            overrides it - ``"LOW"``, ``"MEDIUM"`` or ``"HIGH"``, and the server's default when
             left empty.
         :param internal: marks the queue as euclid's own plumbing, which leaves it out of an
             ordinary listing.
@@ -265,7 +265,7 @@ class EuclidEqs(ModuleClient):
         with the message across every hop, which is what lets a service pass on what it received
         rather than what it happens to know.
 
-        ``priority`` is ``"LOW"``, ``"MIDDLE"`` or ``"HIGH"``; left empty, the message takes the
+        ``priority`` is ``"LOW"``, ``"MEDIUM"`` or ``"HIGH"``; left empty, the message takes the
         queue's own default.
         """
         payload: dict[str, Any] = {"ern": queue_ern, "body": body,

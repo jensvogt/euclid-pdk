@@ -92,7 +92,7 @@ def walk(esm, bucket_ern: str) -> None:
     print(f"deleted {deleted.objects} of the {deleted.asked} key(s) asked for - one named nothing, "
           f"which is not an error")
 
-    print(f"\nbucket holds {esm.get_object_count(bucket_ern)} object(s), "
+    print(f"\nbucket holds {esm.count_objects(bucket_ern)} object(s), "
           f"{esm.get_bucket_size(bucket_ern)} byte(s)")
 
     try:

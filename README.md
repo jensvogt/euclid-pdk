@@ -277,7 +277,8 @@ connection.
 | `set_bucket_internal` | whether a bucket is euclid's own plumbing, and so left out of listings |
 | `enable_encryption`, `disable_encryption` | encryption at rest, under an EKM key |
 | `put_object`, `get_object`, `upload_file`, `download_file` | an object's bytes |
-| `list_objects`, `get_object_count`, `copy_object`, `move_object`, `rename_object` | objects |
+| `list_objects`, `copy_object`, `move_object`, `rename_object` | objects |
+| `count_objects`, `get_object_count` | how many there are: counted exactly, or the bucket's stored running total |
 | `delete_object`, `delete_objects`, `purge_bucket` | deleting them |
 | `touch_object` | re-announcing objects to listeners that missed their creation |
 | `add_object_attribute`, `set_object_attribute`, `list_object_attributes`, `delete_object_attribute` | user-defined attributes |
@@ -395,6 +396,7 @@ instrumentation that polls every few seconds would otherwise keep a pool permane
 | `create_topic`, `list_topics`, `get_topic_ern`, `get_topic_metadata`, `delete_topic` | topics |
 | `add_topic_tag`, `set_topic_tag`, `delete_topic_tag` | topic tags |
 | `stop_topic`, `start_topic` | holding delivery, and letting it go again |
+| `resend_messages` | handing what the topic still holds to its subscribers again |
 | `set_topic_retention`, `set_topic_max_message_length` | how long a published message is kept, and how large it may be |
 | `publish_message`, `list_messages`, `get_message_count`, `purge_topic`, `purge_all_topics` | messages |
 | `get_message_attribute`, `set_message_attribute` | message attributes |

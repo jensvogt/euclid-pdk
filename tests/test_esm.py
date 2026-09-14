@@ -81,8 +81,27 @@ def test_the_single_value_answers_come_back_as_values(gateway, esm):
     assert esm.get_bucket_ern("reports") == BUCKET
     assert gateway.last().json() == {"name": "reports"}
     assert esm.get_bucket_size(BUCKET) == 4096
-    assert esm.get_object_count(BUCKET, prefix="2026/") == 12
-    assert gateway.last().json() == {"ern": BUCKET, "prefix": "2026/"}
+    assert esm.get_object_count(BUCKET) == 12
+    assert gateway.last().json() == {"ern": BUCKET}
+
+
+def test_counting_is_a_different_question_from_the_stored_total(gateway, esm):
+    """get-object-count reads the bucket's running total; count-objects counts.
+
+    The two were one call until euclid 1.0.73, which took a prefix and ignored it - so a caller
+    asking about part of a bucket was quietly given the whole bucket's figure.
+    """
+    gateway.answer("esm", "count-objects",
+                   {"ern": BUCKET, "prefix": "2026/", "includeDirectories": False, "count": 12})
+
+    assert esm.count_objects(BUCKET, prefix="2026/") == 12
+    assert gateway.last().json() == {"ern": BUCKET, "prefix": "2026/", "includeDirectories": False}
+
+    gateway.answer("esm", "count-objects",
+                   {"ern": BUCKET, "prefix": "", "includeDirectories": True, "count": 15})
+
+    assert esm.count_objects(BUCKET, include_directories=True) == 15
+    assert gateway.last().json() == {"ern": BUCKET, "prefix": "", "includeDirectories": True}
 
 
 def test_tags_rename_purge_and_the_internal_flag(gateway, esm):

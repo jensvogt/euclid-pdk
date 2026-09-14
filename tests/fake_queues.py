@@ -67,7 +67,7 @@ class FakeQueues:
                 "queueErn": body["ern"],
                 "messageId": f"message-{self._sent}",
                 "status": "AVAILABLE",
-                "priority": body.get("priority", "MIDDLE"),
+                "priority": body.get("priority", "MEDIUM"),
                 "body": body.get("body", ""),
                 "receiptHandle": "",
                 "size": len(body.get("body", "")),

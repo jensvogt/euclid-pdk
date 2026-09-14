@@ -44,7 +44,7 @@ def test_create_and_list_queues(gateway, eqs):
     gateway.answer("eqs", "list-queues", {"total": 2, "queues": [
         {"name": "orders", "ern": QUEUE, "owner": "jens", "tags": {"team": "sales"}, "size": 2048,
          "available": 3, "delayed": 1, "invisible": 2, "visibility": 60, "maxMessageLength": 262144,
-         "maxReceiveCount": 5, "deadLetterQueueArn": queue_ern("orders-dlq"), "priority": "MIDDLE",
+         "maxReceiveCount": 5, "deadLetterQueueArn": queue_ern("orders-dlq"), "priority": "MEDIUM",
          "status": "AVAILABLE", "created": "2026-01-01"},
         {"name": "euclid-delivery", "internal": True},
     ]})
@@ -296,7 +296,7 @@ def test_receive_all_messages_drains_the_queue_in_batches(gateway, eqs, queues):
 def test_message_metadata_and_visibility(gateway, eqs):
     gateway.answer("eqs", "get-message-metadata", {"messageId": "message-1", "queueErn": QUEUE,
                                                    "receiptHandle": "receipt-1", "status": "INVISIBLE",
-                                                   "priority": "MIDDLE", "size": 13, "receivedCount": 2,
+                                                   "priority": "MEDIUM", "size": 13, "receivedCount": 2,
                                                    "visibilityTimeout": 30,
                                                    "contentType": "application/json"})
     gateway.answer("eqs", "set-message-visibility", {})
