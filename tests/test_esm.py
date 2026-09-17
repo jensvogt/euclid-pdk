@@ -127,7 +127,7 @@ def test_tags_rename_purge_and_the_internal_flag(gateway, esm):
     assert gateway.last().json() == {"ern": BUCKET, "internal": True}
 
     assert esm.purge_bucket(BUCKET, prefix="2025/").count == 7
-    assert gateway.last().json() == {"ern": BUCKET, "prefix": "2025/"}
+    assert gateway.last().json() == {"ern": BUCKET, "prefix": "2025/", "async": False}
     esm.delete_bucket(BUCKET)
 
 
@@ -181,6 +181,30 @@ def test_deleting_many_objects_reports_asked_and_deleted(gateway, esm):
 
     assert gateway.last().json() == {"ern": BUCKET, "keys": ["a", "b", "gone"], "async": False}
     assert (result.asked, result.objects, result.background) == (3, 2, False)
+
+
+def test_deleting_a_bucket_in_the_background(gateway, esm):
+    """A bucket goes with its objects, and a large one is emptied in the background first."""
+    gateway.answer("esm", "delete-bucket", {"ern": BUCKET, "async": True, "jobId": "job-7",
+                                            "objects": 40_000}, status=202)
+
+    result = esm.delete_bucket(BUCKET, background=True)
+
+    assert gateway.last().json() == {"ern": BUCKET, "async": True}
+    assert (result.count, result.background, result.job_id) == (40_000, True, "job-7")
+
+
+def test_purging_a_bucket_in_the_background(gateway, esm):
+    """Emptying a bucket can take minutes, so the server writes the work down and answers at once."""
+    gateway.answer("esm", "purge-bucket", {"ern": BUCKET, "async": True, "jobId": "job-42",
+                                           "objects": 120_000}, status=202)
+
+    result = esm.purge_bucket(BUCKET, background=True)
+
+    assert gateway.last().json() == {"ern": BUCKET, "prefix": "", "async": True}
+    # "objects" here, "count" when it runs inline: the same figure at two points in the same work,
+    # and count reads it either way rather than a zero meaning the other field name was used.
+    assert (result.count, result.background, result.job_id) == (120_000, True, "job-42")
 
 
 def test_touching_a_bucket_in_the_background(gateway, esm):

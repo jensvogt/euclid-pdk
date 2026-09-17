@@ -31,7 +31,8 @@ from typing import Any, BinaryIO, Callable, Iterable, Iterator, Mapping, Sequenc
 
 from ..dto.com import Variant
 from ..dto.esm import (BucketEvent, CreateBucketResult, CreateDownloadResult, CreateUploadResult,
-                       DeleteObjectsResult, DisableEncryptionResult, EnableEncryptionResult, EsmObject,
+                       DeleteBucketResult, DeleteObjectsResult, DisableEncryptionResult, EnableEncryptionResult,
+                       EsmObject,
                        ListBucketsResult, ListObjectsResult, ObjectAttribute, PurgeBucketResult,
                        RenameBucketResult, SetBucketInternalResult, StoredObject, SubscribeResult,
                        Subscription, TouchObjectResult)
@@ -125,9 +126,24 @@ class EuclidEsm(ModuleClient):
         """
         return CreateBucketResult.from_json(self._call("create-bucket", {"name": name, "internal": internal}))
 
-    def delete_bucket(self, ern: str) -> None:
-        """Deletes a bucket. It has to be empty; :meth:`purge_bucket` is what makes it so."""
-        self._call("delete-bucket", {"ern": ern})
+    def delete_bucket(self, ern: str, background: bool = False) -> DeleteBucketResult:
+        """Deletes a bucket, and its objects with it.
+
+        Nothing else ever would: an object is only ever reached through its bucket, so a row left
+        behind would be unreachable for good and the file it names would be disk nothing accounts
+        for. :meth:`purge_bucket` is the one that empties a bucket and keeps it.
+
+        ``background`` is what a bucket of any size wants: emptying one can take minutes, and
+        holding a request open for all of it is a request that times out while the removal carries
+        on invisibly behind it. The server then answers as soon as it has written the work down.
+
+        The bucket goes when the emptying finishes, so until then it stays listed - and still
+        deletable. A caller watching for it to disappear is watching the right thing.
+
+        Deleting inline answers with nothing, since the bucket is gone by then; the result is only
+        worth reading when ``background`` is true.
+        """
+        return DeleteBucketResult.from_json(self._call("delete-bucket", {"ern": ern, "async": background}))
 
     def list_buckets(self, prefix: str = "", page_size: int = 10, page_index: int = 0,
                      sort_column: str = "name", sort_direction: str = "asc",
@@ -170,12 +186,22 @@ class EuclidEsm(ModuleClient):
         return SetBucketInternalResult.from_json(self._call("set-bucket-internal", {
             "ern": ern, "internal": internal}))
 
-    def purge_bucket(self, ern: str, prefix: str = "") -> PurgeBucketResult:
+    def purge_bucket(self, ern: str, prefix: str = "", background: bool = False) -> PurgeBucketResult:
         """Deletes a bucket's objects, leaving the bucket itself in place.
 
         A prefix narrows it to the keys that start with that; an empty one purges everything.
+
+        ``background`` is what a bucket of any size wants: emptying one can take minutes, and
+        holding a request open for all of it is a request that times out while the removal carries
+        on invisibly behind it. The server then answers as soon as it has written the work down,
+        and the result's ``count`` is what the bucket held rather than what has gone.
+
+        Written down is the point: the job survives the instance that took it on being stopped -
+        which the autoscaler does to an instance it sees no requests on - and another picks it up
+        and carries on from where it got to.
         """
-        return PurgeBucketResult.from_json(self._call("purge-bucket", {"ern": ern, "prefix": prefix}))
+        return PurgeBucketResult.from_json(self._call("purge-bucket", {
+            "ern": ern, "prefix": prefix, "async": background}))
 
     def enable_encryption(self, bucket_ern: str, key_id: str = "") -> EnableEncryptionResult:
         """Encrypts every object written to this bucket from now on, under an EKM key.

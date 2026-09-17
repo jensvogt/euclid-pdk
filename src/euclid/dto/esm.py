@@ -232,15 +232,57 @@ class SetBucketInternalResult:
 
 
 @dataclass
+class DeleteBucketResult:
+    """What a background bucket deletion took on.
+
+    Only a deletion asked to run in the background answers with anything at all - a bucket deleted
+    inline is simply gone by the time the call returns. So ``background`` is true whenever this is
+    worth reading, ``count`` is how many objects the bucket held when the work was taken on, and
+    ``job_id`` names the job doing it, which outlives the instance that started it.
+
+    The bucket itself goes when the emptying finishes, so it stays listed - and still deletable -
+    until it is genuinely gone.
+    """
+
+    ern: str = ""
+    #: How many objects the bucket held when the deletion was taken on.
+    count: int = 0
+    #: The background job doing the work.
+    job_id: str = ""
+    #: Whether the server is still working through it.
+    background: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "DeleteBucketResult":
+        return DeleteBucketResult(_json.text(document, "ern"), _json.number(document, "objects"),
+                                  _json.text(document, "jobId"), _json.flag(document, "async"))
+
+
+@dataclass
 class PurgeBucketResult:
-    """A purged bucket, and how many objects went."""
+    """A purged bucket, and how many objects went.
+
+    ``background`` says the server answered before doing any of it, in which case ``count`` is how
+    many objects the bucket held when the purge was taken on rather than how many have gone, and
+    ``job_id`` names the job doing it. That job outlives the instance that started it - one stopped
+    by the autoscaler, or lost to a crash, leaves a job another instance picks up and carries on.
+    """
 
     ern: str = ""
     count: int = 0
+    #: The background job doing the work, empty unless ``background``.
+    job_id: str = ""
+    #: Whether the server is still working through the objects.
+    background: bool = False
 
     @staticmethod
     def from_json(document: Any) -> "PurgeBucketResult":
-        return PurgeBucketResult(_json.text(document, "ern"), _json.number(document, "count"))
+        # "count" when the purge ran inline, "objects" when it was taken on: the same figure at two
+        # points in the same work, and a caller reading ``count`` should get it either way rather
+        # than a zero that only means the other field name was used.
+        count = _json.number(document, "count") or _json.number(document, "objects")
+        return PurgeBucketResult(_json.text(document, "ern"), count,
+                                 _json.text(document, "jobId"), _json.flag(document, "async"))
 
 
 @dataclass

@@ -249,18 +249,27 @@ class ResendResult:
     :meth:`EuclidEns.start_topic` is what releases them. A resend leaves them alone, because
     delivering one from here would hand it over without marking it delivered and the next start
     would deliver it a second time.
+
+    ``background`` says the server answered before handing over any of them, in which case
+    ``messages`` is how many the topic held when the resend started and both counts are zero. The
+    module log carries the finished figures.
     """
 
     ern: str = ""
-    #: How many messages went to the topic's subscriptions again.
+    #: How many messages went to the topic's subscriptions again; zero when ``background``.
     resent: int = 0
-    #: How many were passed over as never having been delivered.
+    #: How many were passed over as never having been delivered; zero when ``background``.
     held: int = 0
+    #: How many the topic held when a background resend started, zero otherwise.
+    messages: int = 0
+    #: Whether the server is still handing them over.
+    background: bool = False
 
     @staticmethod
     def from_json(document: Any) -> "ResendResult":
         return ResendResult(_json.text(document, "ern"), _json.number(document, "resent"),
-                            _json.number(document, "held"))
+                            _json.number(document, "held"), _json.number(document, "messages"),
+                            _json.flag(document, "async"))
 
 
 @dataclass

@@ -134,7 +134,7 @@ class EuclidEns(ModuleClient):
         """
         return TopicStateResult.from_json(self._call("start-topic", {"ern": ern}))
 
-    def resend_messages(self, ern: str, message_id: str = "") -> ResendResult:
+    def resend_messages(self, ern: str, message_id: str = "", background: bool = False) -> ResendResult:
         """Hands what a topic still holds to its subscribers again, oldest first.
 
         A topic is not consumed the way a queue is: publishing fans a message out there and then,
@@ -155,8 +155,18 @@ class EuclidEns(ModuleClient):
         :param message_id: resend only this message, as :meth:`list_messages` reports its id; empty
             resends everything the topic holds. One belonging to another topic is refused rather
             than fanned out to subscriptions it was never published to.
+        :param background: answer as soon as the server has counted what it is about to hand over,
+            rather than when it has finished. What a topic with a long retention wants: resending a
+            fortnight of traffic outlasts the request, and inline the caller waits for all of it,
+            gets a timeout anyway, and the resending carries on invisibly behind the abandoned
+            request. Nothing is resumed if the server stops partway and nothing needs to be - a
+            resend removes nothing, so asking again hands over all of them, the ones already sent
+            for a second time. That is the same replay this call always is. Cannot be combined with
+            ``message_id``: one delivery is not worth a status the caller then has to chase, and
+            the server refuses the pair rather than quietly ignoring one of them.
         """
-        return ResendResult.from_json(self._call("resend-messages", {"ern": ern, "messageId": message_id}))
+        return ResendResult.from_json(self._call("resend-messages", {
+            "ern": ern, "messageId": message_id, "async": background}))
 
     def set_topic_retention(self, ern: str, retention_period: int) -> TopicRetentionResult:
         """Sets how long a message published to this topic is kept, in seconds.

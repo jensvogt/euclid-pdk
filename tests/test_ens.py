@@ -102,7 +102,7 @@ def test_resending_hands_the_topics_messages_over_again(gateway, ens):
 
     result = ens.resend_messages(TOPIC)
 
-    assert gateway.last().json() == {"ern": TOPIC, "messageId": ""}
+    assert gateway.last().json() == {"ern": TOPIC, "messageId": "", "async": False}
     assert (result.ern, result.resent, result.held) == (TOPIC, 42, 0)
 
 
@@ -111,7 +111,18 @@ def test_resending_one_message_is_what_a_busy_topic_wants(gateway, ens):
     gateway.answer("ens", "resend-messages", {"ern": TOPIC, "resent": 1, "held": 0})
 
     assert ens.resend_messages(TOPIC, message_id="m-7").resent == 1
-    assert gateway.last().json() == {"ern": TOPIC, "messageId": "m-7"}
+    assert gateway.last().json() == {"ern": TOPIC, "messageId": "m-7", "async": False}
+
+
+def test_resending_a_whole_topic_in_the_background(gateway, ens):
+    """A fortnight of traffic outlasts the request, so the server counts it and answers at once."""
+    gateway.answer("ens", "resend-messages", {"ern": TOPIC, "async": True, "messages": 8_400}, status=202)
+
+    result = ens.resend_messages(TOPIC, background=True)
+
+    assert gateway.last().json() == {"ern": TOPIC, "messageId": "", "async": True}
+    # Nothing had happened yet when this was answered, so both counts are zero rather than partial.
+    assert (result.messages, result.background, result.resent, result.held) == (8_400, True, 0, 0)
 
 
 def test_resending_reports_what_it_passed_over_as_held(gateway, ens):
