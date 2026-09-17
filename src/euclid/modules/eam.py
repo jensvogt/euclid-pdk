@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover - the runtime imports are inside the metho
     from .ees import EuclidEes
     from .ekm import EuclidEkm
     from .ekv import EuclidEkv
+    from .emo import EuclidEmo
     from .ens import EuclidEns
     from .eqs import EuclidEqs
     from .esm import EuclidEsm
@@ -772,6 +773,12 @@ class EuclidSession:
         from .ets import EuclidEts
 
         return self._module("ets", EuclidEts)
+
+    def emo(self) -> "EuclidEmo":
+        """EMO - euclid's monitoring module - on this session's credentials."""
+        from .emo import EuclidEmo
+
+        return self._module("emo", EuclidEmo)
 
     def _module(self, name: str, factory: Callable[["EuclidSession"], Any]) -> Any:
         """The one client this session has for a module, built the first time it is asked for.

@@ -3,11 +3,11 @@
 Python client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
 It covers the three things everything else needs - the connection, request signing, and EAM,
-euclid's access management module - and the ten modules an application spends its time in: ESM
+euclid's access management module - and the eleven modules an application spends its time in: ESM
 (storage), EQS (queues), ENS (topics), EES (events), EKM (keys), ESS (secrets), EKV (key-value
-tables), EAG (the API gateway), EAP (the applications behind it) and ETS (FTP and SFTP onto a
-bucket). The remaining modules (EMO, EMM, EMD and the rest) speak the same protocol over the same
-client and will follow.
+tables), EAG (the API gateway), EAP (the applications behind it), ETS (FTP and SFTP onto a bucket)
+and EMO (monitoring). The remaining modules (EMM, EMD and the rest) speak the same protocol over the
+same client and will follow.
 
 Requires Python 3.10 or newer, and **has no dependencies**. Installing this SDK does not bring a
 TLS stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and
@@ -827,6 +827,92 @@ Note that none of this is `session.ets()`'s own administrator-only rule, and the
 deliberate: somebody who may upload through a server must not be able to stop the server they
 upload through. A refused client is never told why — it gets `550 Permission denied` or
 `SSH_FX_PERMISSION_DENIED`, and the reason, which names roles and grants, goes to euclid's log.
+
+## What EMO covers
+
+`session.emo()` returns the monitoring client.
+
+| Method | Action |
+| --- | --- |
+| `push_metrics` | adding an application's own measurements to the installation's |
+| `list_metrics`, `average` | reading them back |
+| `registry` | a `MeterRegistry` publishing through this client |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+euclid's own modules push their samples here on their own schedule rather than being polled, because
+a module the autoscaler is tearing down cannot answer a poll — it simply stops pushing. An
+application is in the same position, and pushing puts the decision about what is worth publishing
+where it belongs: in the application, which is the only thing that knows. What lands here lands in
+the same rows EMO's own collectors write, and therefore in the same rollups, the same retention and
+the same graphs as CPU, memory and the module gauges.
+
+**The type is not decoration.** EMO rolls five-minute rows into hourly ones and hourly into daily,
+and the type is what says whether that is a sum or a mean — so a counter pushed as a gauge is
+averaged into nonsense, and a gauge pushed as a rate is summed into more of it. `Metric.rate` and
+`Metric.gauge` are how that is said:
+
+```python
+from euclid.dto.emo import Metric
+
+emo.push_metrics("invoice-parser", [Metric.rate("invoices.parsed", 41),
+                                    Metric.gauge("queue.depth", 7, {"queue": "orders"})])
+```
+
+`list_metrics` and `average` are administrator-only server-side: an application publishes its own
+numbers without special rights, and reading everybody's is a different question. A `MetricQuery`
+leaves out every field it does not narrow by, since the server reads an absent field as "do not
+narrow by this" and an empty string as a name that matches nothing. Note `since`/`until` rather than
+the wire's `from`/`to` — `from` is a Python keyword and could not be a field name here.
+
+### Measuring rather than pushing
+
+`push_metrics` takes numbers that are already final. An application that wants to *count* requests
+and *time* them wants a `MeterRegistry`, which accumulates meters in the process and pushes them on
+a step — what a Micrometer registry does in euclid-jdk, and what euclid's own C++ modules do with
+`Core::Monitoring`:
+
+```python
+with session.emo().registry("invoice-parser", common_labels={"host": hostname}) as metrics:
+    parsed = metrics.counter("invoices.parsed")
+    failed = metrics.counter("invoices.parsed", {"outcome": "failed"})
+    duration = metrics.timer("invoice.parse")
+    metrics.gauge_from("queue.depth", lambda: float(len(queue)))
+
+    for invoice in incoming:
+        with duration:
+            parsed.increment() if parse(invoice) else failed.increment()
+```
+
+A counter and a timer report what accumulated since the last publish and start again, which is what
+makes them rates to EMO — the thing a rollup sums. A gauge reports what it reads at the moment of
+publishing and is not reset. Every registered meter is published every step, including the ones that
+did not move: a zero is a fact, and a gap in a graph is not.
+
+A timer records three ways — `record(seconds)`, `with timer:`, and `@timer` on a function — and the
+last two are the point: a timing written by hand at the end of a function is a timing that is not
+taken when the function returns early or raises. It publishes the three series euclid-jdk's
+Micrometer registry publishes, under the same names, so a Python application's timings graph beside a
+Java one's: `<name>.count` and `<name>.total` as rates and `<name>.max` as a gauge. **Durations go
+in as seconds and out as milliseconds** — seconds because that is what `time.perf_counter` and
+`timedelta.total_seconds` deal in, milliseconds because that is euclid-jdk's base unit and two SDKs
+reporting the same operation in different units would not be comparable. There are no percentiles,
+which follows from where this goes: EMO stores one value per series per interval, so a p99 would have
+to be computed here and pushed as a series of its own.
+
+`step=0` starts no thread at all and leaves publishing to whoever calls `publish()` — for an
+application with a loop of its own, and for a test. Otherwise a daemon thread publishes every step
+(a minute by default) and `close()`, which the `with` form calls, stops it and sends the step in
+hand.
+
+Two things worth knowing before this is switched on in anger. **Every meter is one stored row per
+step, forever**, so the number of label combinations is the number of series — a label carrying a
+request id or a customer name is how a monitoring database is filled up, and the labels are decided
+where the meter is created because that is the one place that can. And **a push that fails is
+counted in `failed_publishes` and dropped, not retried**: a rate sent twice is counted twice, and a
+monitoring system that lies about throughput is worse than one with a gap in it. Nothing here raises
+at the application — a process does not stop because it could not say how it was doing — so
+`publishes` and `failed_publishes` are the only answer to "is the monitoring working", since a metric
+about pushing metrics cannot be pushed.
 
 ## Writing a module of your own
 

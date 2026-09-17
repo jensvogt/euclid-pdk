@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["text", "flag", "number", "strings", "string_map", "documents"]
+__all__ = ["text", "flag", "number", "real", "strings", "string_map", "documents"]
 
 
 def text(document: Any, name: str) -> str:
@@ -39,6 +39,18 @@ def number(document: Any, name: str) -> int:
         return 0
     value = document.get(name)
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def real(document: Any, name: str) -> float:
+    """A floating-point field, zero when absent.
+
+    Separate from :func:`number` rather than folded into it: a measurement is a real number and
+    truncating 0.4 milliseconds to zero would be a timer that reports nothing for everything fast.
+    """
+    if not isinstance(document, dict):
+        return 0.0
+    value = document.get(name)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
 def strings(document: Any, name: str) -> list[str]:
