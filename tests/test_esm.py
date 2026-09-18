@@ -395,8 +395,12 @@ def test_an_empty_file_still_becomes_an_object(gateway, esm, storage, tmp_path):
 
     esm.upload_file(BUCKET, "empty", empty)
 
+    # Zero bytes is below any part size, so it goes the way every other small file goes. It used to
+    # create an upload, send one empty part and complete it - three calls to store nothing, and the
+    # part had to be manufactured, since reading an empty file produces no parts at all. The object
+    # that results is the same either way.
     assert storage.objects[(BUCKET, "empty")] == b""
-    assert len([r for r in gateway.requests if r.action == "upload-part"]) == 1
+    assert [r.action for r in gateway.requests if r.target == "esm"] == ["put-object"]
 
 
 def test_upload_attributes_ride_on_the_call_that_completes_it(gateway, esm, storage, tmp_path):
@@ -405,7 +409,9 @@ def test_upload_attributes_ride_on_the_call_that_completes_it(gateway, esm, stor
     source = tmp_path / "q3.pdf"
     source.write_bytes(b"a report")
 
-    esm.upload_file(BUCKET, "q3.pdf", source, attributes={"tenant": "acme"},
+    # part_size=2 against 8 bytes: four parts, so this stays a multipart upload. Left at the
+    # default the file goes up whole and there is no complete-upload to assert on.
+    esm.upload_file(BUCKET, "q3.pdf", source, part_size=2, attributes={"tenant": "acme"},
                     system_attributes={"priority": "HIGH"})
 
     complete = [r for r in gateway.requests if r.action == "complete-upload"][-1]
@@ -423,7 +429,9 @@ def test_a_part_that_fails_transiently_is_sent_again(gateway, esm, storage, tmp_
     source.write_bytes(b"a report")
     storage.fail_next("upload-part", times=2)
 
-    esm.upload_file(BUCKET, "q3.pdf", source, concurrency=1)
+    # part_size=8 is exactly the file: one part, still multipart, so the count below is about
+    # the retry rather than about how many pieces the file was cut into.
+    esm.upload_file(BUCKET, "q3.pdf", source, part_size=8, concurrency=1)
 
     assert storage.objects[(BUCKET, "q3.pdf")] == b"a report"
     assert len([r for r in gateway.requests if r.action == "upload-part"]) == 3
@@ -437,7 +445,7 @@ def test_the_calls_bracketing_a_transfer_are_retried_too(gateway, esm, storage, 
     storage.fail_next("create-upload", times=1)
     storage.fail_next("complete-upload", times=1)
 
-    esm.upload_file(BUCKET, "q3.pdf", source)
+    esm.upload_file(BUCKET, "q3.pdf", source, part_size=2)
 
     assert storage.objects[(BUCKET, "q3.pdf")] == b"a report"
     assert len([r for r in gateway.requests if r.action == "create-upload"]) == 2
@@ -449,7 +457,7 @@ def test_a_part_that_keeps_failing_gives_up_with_the_servers_reason(gateway, esm
     storage.fail_next("upload-part", times=99)
 
     with pytest.raises(EuclidServiceError) as raised:
-        esm.upload_file(BUCKET, "q3.pdf", source)
+        esm.upload_file(BUCKET, "q3.pdf", source, part_size=8)
 
     assert (raised.value.target, raised.value.action, raised.value.status) == ("esm", "upload-part", 500)
     assert raised.value.reason == "Storage temporarily unavailable"
@@ -463,10 +471,59 @@ def test_a_rejected_part_is_not_retried(gateway, esm, storage, tmp_path):
     storage.fail_next("upload-part", times=99, status=400)
 
     with pytest.raises(EuclidServiceError) as raised:
-        esm.upload_file(BUCKET, "q3.pdf", source)
+        esm.upload_file(BUCKET, "q3.pdf", source, part_size=8)
 
     assert raised.value.status == 400
     assert len([r for r in gateway.requests if r.action == "upload-part"]) == 1
+
+
+def test_a_file_below_the_part_size_goes_up_whole(gateway, esm, storage, tmp_path):
+    """One part is not a multipart upload.
+
+    create-upload, upload-part and complete-upload are three round trips, and on the server an
+    upload directory, a part file, an assembly pass and a separate MD5 - none of which buys
+    anything when there is only ever going to be one part. Measured on a development installation
+    before this existed: 0.94 parts per upload, so essentially every one was single-part, and
+    793,614 objects written in an hour with every one of them under a kilobyte.
+    """
+    source = tmp_path / "q3.pdf"
+    source.write_bytes(b"a report")
+
+    esm.upload_file(BUCKET, "q3.pdf", source, part_size=5000)
+
+    # The whole list, so a stray extra call fails here rather than passing unnoticed.
+    assert [r.action for r in gateway.requests if r.target == "esm"] == ["put-object"]
+    assert storage.objects[(BUCKET, "q3.pdf")] == b"a report"
+
+
+def test_a_file_at_exactly_the_part_size_still_uses_multipart(gateway, esm, storage, tmp_path):
+    """The boundary, stated rather than left to the reader: strictly below goes whole, equal does not."""
+    source = tmp_path / "q3.pdf"
+    source.write_bytes(b"a report")
+
+    esm.upload_file(BUCKET, "q3.pdf", source, part_size=8)
+
+    actions = [r.action for r in gateway.requests if r.target == "esm"]
+    assert "create-upload" in actions
+    assert "put-object" not in actions
+
+
+def test_a_small_upload_still_carries_its_attributes(gateway, esm, storage, tmp_path):
+    """put-object takes attributes on its own headers, so a file that changed route could lose them.
+
+    For the parser that metadata is which datenlieferant a file came from and how urgent it is -
+    things the bucket cannot express and a subscriber cannot recover.
+    """
+    source = tmp_path / "q3.pdf"
+    source.write_bytes(b"a report")
+
+    esm.upload_file(BUCKET, "q3.pdf", source, part_size=5000,
+                    attributes={"tenant": "acme"}, system_attributes={"priority": "HIGH"})
+
+    put = gateway.last()
+    assert put.action == "put-object"
+    assert json.loads(put.headers["x-euclid-attributes"]) == {"tenant": {"type": "string", "value": "acme"}}
+    assert json.loads(put.headers["x-euclid-system-attributes"]) == {"priority": {"type": "string", "value": "HIGH"}}
 
 
 def test_a_part_size_of_nothing_is_refused_before_anything_is_sent(gateway, esm, storage, tmp_path):

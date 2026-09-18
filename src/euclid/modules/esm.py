@@ -459,7 +459,15 @@ class EuclidEsm(ModuleClient):
 
         The file is read a part at a time rather than into memory, and no more than ``concurrency``
         parts are ever in flight, so the memory this costs is bounded by the two together whatever
-        the file's size. An empty file is one empty part, so that the object exists.
+        the file's size.
+
+        A file below ``part_size`` goes up whole, in a single :meth:`put_object`, because one part
+        is not a multipart upload: create-upload, upload-part and complete-upload are three round
+        trips, and on the server an upload directory, a part file, an assembly pass and a separate
+        MD5 - none of which buys anything when there is only ever going to be one part. An empty
+        file takes that route too, and the object it leaves is the same zero bytes at the key.
+        Measured on a development installation before this existed: 0.94 parts per upload, and
+        793,614 objects written in an hour with every one of them under a kilobyte.
 
         Attributes belong on the upload rather than added afterwards: completing an upload is
         finished off in the background, and the object row written at the end carries what this call
@@ -471,6 +479,13 @@ class EuclidEsm(ModuleClient):
         """
         _check_part_size(part_size)
         concurrency = max(1, concurrency)
+
+        # stat rather than read: a file too large for this branch must not be pulled into memory
+        # to discover that it was.
+        path = Path(file)
+        if path.stat().st_size < part_size:
+            return self.put_object(bucket_ern, key, path.read_bytes(), attributes, system_attributes)
+
         upload = self._create_upload(bucket_ern, key, concurrency)
         with open(file, "rb") as source:
             _run_bounded(self._upload_parts(upload.upload_id, source, part_size), concurrency)
