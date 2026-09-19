@@ -187,6 +187,21 @@ def test_starting_asks_rather_than_waits(gateway, eap):
     assert stopped.is_running
 
 
+def test_restarting_cycles_the_pool_without_changing_the_desired_state(gateway, eap):
+    """The one way to have every instance start again that does not leave the application stopped
+    if the caller goes away between two calls."""
+    gateway.answer("eap", "restart-application",
+                   {"applicationId": "order-service", "restarting": True, "instances": 3})
+
+    restarted = eap.restart_application("order-service")
+
+    assert gateway.last().json() == {"applicationId": "order-service"}
+    assert restarted.restarting
+    assert restarted.application_id == "order-service"
+    # What is running when the request is answered: the manager has not stopped anything yet.
+    assert restarted.instances == 3
+
+
 def test_an_application_reports_the_instances_answering_for_it(gateway, eap):
     gateway.answer("eap", "get-application", APPLICATION)
 

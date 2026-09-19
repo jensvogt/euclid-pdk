@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..dto.eap import Application, LogLevelResult
+from ..dto.eap import Application, LogLevelResult, RestartResult
 from .base import ModuleClient
 
 __all__ = ["EuclidEap", "TARGET", "JAVA", "PYTHON", "NODEJS", "BINARY",
@@ -205,6 +205,21 @@ class EuclidEap(ModuleClient):
     def stop_application(self, application_id: str) -> Application:
         """Asks for an application to stop, and returns it as it stands."""
         return self._application("stop-application", {"applicationId": application_id})
+
+    def restart_application(self, application_id: str) -> RestartResult:
+        """Asks for a running application's instances to be started again.
+
+        The manager stops the whole pool on its next reconcile and starts it straight back up from
+        the current definition - the same thing it does after a redeploy, with nothing new to pick
+        up. The artifact, the environment and the credentials all come back as they were, so this
+        is for an instance that has to do its startup again rather than a way to deploy anything.
+
+        Deliberately not :meth:`stop_application` followed by :meth:`start_application`: between
+        those two the desired state is ``STOPPED``, so a caller that fails in between leaves the
+        application down. Here it stays ``RUNNING`` throughout, and one that is already stopped is
+        refused with HTTP 400 rather than started.
+        """
+        return RestartResult.from_json(self._call("restart-application", {"applicationId": application_id}))
 
     def list_applications(self, prefix: str = "") -> list[Application]:
         """The applications whose ID starts with a prefix; an empty prefix lists them all."""

@@ -125,6 +125,26 @@ class Application:
 
 
 @dataclass
+class RestartResult:
+    """What a restart request came to.
+
+    ``restarting`` says the request was recorded, not that anything has happened: the manager stops
+    and starts the instances on its next reconcile. ``instances`` is what was running when the
+    request was answered, so it is the size of the pool about to be cycled rather than the one that
+    came back.
+    """
+
+    application_id: str = ""
+    restarting: bool = False
+    instances: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "RestartResult":
+        return RestartResult(_json.text(document, "applicationId"), _json.flag(document, "restarting"),
+                             _json.number(document, "instances"))
+
+
+@dataclass
 class LogLevelResult:
     """What an application logs at now, and the channel it logs on.
 

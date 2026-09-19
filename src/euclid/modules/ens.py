@@ -29,7 +29,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..dto.com import Variant
-from ..dto.ens import (CreateTopicResult, ListTopicsResult, MessageAttribute, MessageCount,
+from ..dto.ens import (Message, Topic, CreateTopicResult, ListTopicsResult, MessageAttribute, MessageCount,
                        MessagesResult, ResendResult, SubscribeResult, Subscription,
                        TopicMaxMessageLengthResult, TopicMetadata, TopicRetentionResult,
                        TopicStateResult)
@@ -93,6 +93,31 @@ class EuclidEns(ModuleClient):
         return ListTopicsResult.from_json(self._call("list-topics", {
             "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
             "sortColumn": sort_column, "sortDirection": sort_direction}))
+
+    def get_topic(self, name_or_ern: str) -> Topic:
+        """One topic, by name or by ERN.
+
+        What comes back is exactly what :meth:`list_topics` describes each of its own with -
+        the ERN, the owner, retention, tags, how much it holds and what has been published through it - so this is the single-topic form of a listing rather than another view of one.
+
+        A value starting with ``ern:`` is taken as an ERN and names one topic in the
+        installation; anything else is a name and is resolved in the session's own account and
+        namespace, the way :meth:`get_topic_ern` resolves one.
+        """
+        payload = {"ern": name_or_ern} if name_or_ern.startswith("ern:") else {"name": name_or_ern}
+        return Topic.from_json(self._call("get-topic", payload).get("topic"))
+
+    def get_message(self, message_id: str) -> Message:
+        """One message, by its id.
+
+        The message id, not a receipt handle: a receipt handle belongs to one delivery and is void
+        once that delivery's claim has expired, while the id names the message for as long as it
+        exists - and asking about a message is something one does after the fact.
+
+        What comes back is what :meth:`list_messages` describes each of its own with: the body, the
+        attributes, the topic it belongs to, its status and its timestamps.
+        """
+        return Message.from_json(self._call("get-message", {"messageId": message_id}).get("message"))
 
     def get_topic_ern(self, name: str) -> str:
         """The ERN of the topic of this name, in the session's account and namespace."""

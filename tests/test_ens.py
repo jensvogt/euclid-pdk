@@ -389,3 +389,31 @@ def test_call_reaches_an_ens_action_this_sdk_does_not_wrap(gateway, ens):
 
     assert ens.call("some-future-action", {"x": 1}) == {"ok": True}
     assert gateway.last().json() == {"x": 1}
+
+
+def test_one_topic_is_described_the_way_a_listing_describes_each(gateway, ens):
+    gateway.answer("ens", "get-topic", {"topic": {
+        "name": "orders", "ern": TOPIC, "owner": "jens", "messages": 12, "retentionPeriod": 86400}})
+
+    topic = ens.get_topic("orders")
+
+    assert gateway.last().json() == {"name": "orders"}
+    assert (topic.ern, topic.messages, topic.retention_period) == (TOPIC, 12, 86400)
+
+
+def test_a_topic_can_be_asked_for_by_ern_as_well_as_by_name(gateway, ens):
+    gateway.answer("ens", "get-topic", {"topic": {"name": "orders", "ern": TOPIC}})
+
+    ens.get_topic(TOPIC)
+
+    assert gateway.last().json() == {"ern": TOPIC}
+
+
+def test_a_published_message_can_be_read_back_by_id(gateway, ens):
+    gateway.answer("ens", "get-message", {"message": {
+        "messageId": "m-1", "topicErn": TOPIC, "body": "hello", "status": "PUBLISHED"}})
+
+    message = ens.get_message("m-1")
+
+    assert gateway.last().json() == {"messageId": "m-1"}
+    assert (message.message_id, message.body) == ("m-1", "hello")

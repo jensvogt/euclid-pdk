@@ -424,3 +424,37 @@ def test_call_and_metrics(gateway, eqs):
     assert eqs.metrics() == {"items": [{"name": "eqs-messages", "value": 3}]}
     assert eqs.call("some-future-action", {"x": 1}) == {"ok": True}
     assert gateway.last().json() == {"x": 1}
+
+
+def test_one_queue_is_described_the_way_a_listing_describes_each(gateway, eqs):
+    """get-queue answers with the same Queue a listing carries, so the two cannot drift."""
+    gateway.answer("eqs", "get-queue", {"queue": {
+        "name": "orders", "ern": QUEUE, "owner": "jens", "available": 7, "delayed": 1,
+        "invisible": 2, "visibility": 45, "tags": {"team": "fulfilment"}}})
+
+    queue = eqs.get_queue("orders")
+
+    assert gateway.last().json() == {"name": "orders"}
+    assert (queue.ern, queue.available, queue.invisible) == (QUEUE, 7, 2)
+    assert queue.tags == {"team": "fulfilment"}
+
+
+def test_a_queue_can_be_asked_for_by_ern_as_well_as_by_name(gateway, eqs):
+    gateway.answer("eqs", "get-queue", {"queue": {"name": "orders", "ern": QUEUE}})
+
+    eqs.get_queue(QUEUE)
+
+    assert gateway.last().json() == {"ern": QUEUE}
+
+
+def test_a_message_is_asked_for_by_id_not_by_receipt_handle(gateway, eqs):
+    """A receipt handle is void once its delivery's claim expires; the id names the message for as
+    long as it exists, which is what asking about one after the fact needs."""
+    gateway.answer("eqs", "get-message", {"message": {
+        "messageId": "m-1", "queueErn": QUEUE, "body": "hello", "status": "AVAILABLE",
+        "receivedCount": 2}})
+
+    message = eqs.get_message("m-1")
+
+    assert gateway.last().json() == {"messageId": "m-1"}
+    assert (message.message_id, message.body, message.received_count) == ("m-1", "hello", 2)

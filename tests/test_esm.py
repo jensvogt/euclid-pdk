@@ -71,6 +71,30 @@ def test_create_and_list_buckets(gateway, esm):
     assert listed.buckets[1].owner == "" and listed.buckets[1].tags == {}
 
 
+def test_one_bucket_is_described_the_way_a_listing_describes_each(gateway, esm):
+    """get-bucket answers with the same Bucket a listing carries, so the two cannot drift."""
+    gateway.answer("esm", "get-bucket", {"bucket": {
+        "name": "reports", "ern": BUCKET, "owner": "jens", "size": 2048, "objects": 7,
+        "tags": {"team": "media"}, "encrypted": True, "encryptionKeyErn": "ern:ekm:key/1"}})
+
+    bucket = esm.get_bucket("reports")
+
+    assert gateway.last().json() == {"name": "reports"}
+    assert (bucket.ern, bucket.size, bucket.objects) == (BUCKET, 2048, 7)
+    assert bucket.tags == {"team": "media"}
+    assert bucket.encrypted and bucket.encryption_key_ern == "ern:ekm:key/1"
+
+
+def test_a_bucket_can_be_asked_for_by_ern_as_well_as_by_name(gateway, esm):
+    """A name is resolved in the session's own namespace and an ERN is not, so which of the two was
+    given has to reach the server as the field it is - the caller should not have to say."""
+    gateway.answer("esm", "get-bucket", {"bucket": {"name": "reports", "ern": BUCKET}})
+
+    esm.get_bucket(BUCKET)
+
+    assert gateway.last().json() == {"ern": BUCKET}
+
+
 def test_the_single_value_answers_come_back_as_values(gateway, esm):
     """An ERN, a size and a count are one number or one string; wrapping them would only mean the
     caller unwrapping them again."""

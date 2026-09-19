@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ..dto.com import Variant
-from ..dto.esm import (BucketEvent, CreateBucketResult, CreateDownloadResult, CreateUploadResult,
+from ..dto.esm import (Bucket, BucketEvent, CreateBucketResult, CreateDownloadResult, CreateUploadResult,
                        DeleteBucketResult, DeleteObjectsResult, DisableEncryptionResult, EnableEncryptionResult,
                        EsmObject,
                        ListBucketsResult, ListObjectsResult, ObjectAttribute, PurgeBucketResult,
@@ -158,6 +158,21 @@ class EuclidEsm(ModuleClient):
             "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
             "sortColumn": sort_column, "sortDirection": sort_direction,
             "includeInternal": include_internal}))
+
+    def get_bucket(self, name_or_ern: str) -> Bucket:
+        """One bucket, by name or by ERN.
+
+        What comes back is exactly what :meth:`list_buckets` describes each of its own with - the
+        ERN, the account and namespace, the size and object count, encryption, tags and timestamps
+        - so this is the single-bucket form of a listing rather than another view of one.
+
+        A value starting with ``ern:`` is taken as an ERN and names one bucket in the installation;
+        anything else is a name and is resolved in the session's own account and namespace, the way
+        :meth:`get_bucket_ern` resolves one. A bucket that exists only in another namespace is a
+        404 when asked for by name.
+        """
+        payload = {"ern": name_or_ern} if name_or_ern.startswith("ern:") else {"name": name_or_ern}
+        return Bucket.from_json(self._call("get-bucket", payload).get("bucket"))
 
     def get_bucket_ern(self, name: str) -> str:
         """The ERN of the bucket of this name, in the session's account and namespace."""
