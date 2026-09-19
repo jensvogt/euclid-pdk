@@ -95,6 +95,29 @@ def test_listing_keys_never_carries_material(gateway, ekm):
     assert not hasattr(listed.keys[0], "key_material")
 
 
+def test_get_key_sends_the_name_and_parses_the_key(gateway, ekm):
+    gateway.answer("ekm", "get-key", {"key": {
+        "name": "key-1", "ern": KEY, "description": "exports", "algorithm": "AES", "length": 256,
+        "status": "AVAILABLE", "tags": {"team": "finance"}, "created": "2026-01-01"}})
+
+    key = ekm.get_key("key-1")
+
+    assert gateway.last().json() == {"name": "key-1"}
+    assert (key.name, key.ern, key.length) == ("key-1", KEY, 256)
+    assert key.tags == {"team": "finance"}
+    # What this returns is the key's description; the material never leaves the module, so there is
+    # no field here that could carry it.
+    assert not hasattr(key, "key_material")
+
+
+def test_get_key_asks_by_ern_when_given_one(gateway, ekm):
+    gateway.answer("ekm", "get-key", {"key": {"name": "key-1", "ern": KEY}})
+
+    ekm.get_key(KEY)
+
+    assert gateway.last().json() == {"ern": KEY}
+
+
 def test_deleting_a_key_is_scheduled_rather_than_immediate(gateway, ekm):
     """It is the one action here that no other can undo, so the window is the chance to notice."""
     gateway.answer("ekm", "delete-key", {"name": "key-1", "ern": KEY, "status": "PENDING_DELETION",

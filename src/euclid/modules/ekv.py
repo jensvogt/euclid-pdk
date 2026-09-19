@@ -22,6 +22,7 @@ what JSON can express, so nothing here takes a :class:`~euclid.dto.com.Variant`.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Mapping
 
 from ..dto.ekv import Item, ListTablesResult, QueryResult, ScanResult, TableDescription
@@ -88,16 +89,29 @@ class EuclidEkv(ModuleClient):
             "name": name, "partitionKey": partition_key, "partitionKeyType": partition_key_type,
             "sortKey": sort_key, "sortKeyType": sort_key_type}))
 
-    def describe_table(self, name: str) -> TableDescription:
+    def get_table(self, name: str) -> TableDescription:
         """A table's key, and how many items it holds.
 
         The count is counted rather than looked up, so this is not free on a large table.
         """
-        return TableDescription.from_json(self._call("describe-table", {"name": name}))
+        return TableDescription.from_json(self._call("get-table", {"name": name}))
+
+    def describe_table(self, name: str) -> TableDescription:
+        """One table.
+
+        .. deprecated::
+           Renamed to :meth:`get_table`, for consistency with every other module's way of naming
+           the call that reads one thing. This delegate sends ``get-table`` like its replacement
+           does - the old ``describe-table`` action no longer exists server-side, so keeping it
+           here would only produce a 4xx.
+        """
+        warnings.warn("describe_table() is deprecated; use get_table()", DeprecationWarning,
+                      stacklevel=2)
+        return self.get_table(name)
 
     def list_tables(self, prefix: str = "", page_size: int = 10, page_index: int = 0,
                     sort_column: str = "name", sort_direction: str = "asc") -> ListTablesResult:
-        """One page of tables, each described as :meth:`describe_table` would describe it."""
+        """One page of tables, each described as :meth:`get_table` would describe it."""
         return ListTablesResult.from_json(self._call("list-tables", {
             "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
             "sortColumn": sort_column, "sortDirection": sort_direction}))

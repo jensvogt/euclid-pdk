@@ -354,6 +354,18 @@ class EuclidSession:
             "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
             "sortColumn": sort_column, "sortDirection": sort_direction}))
 
+    def get_user(self, user_id: str) -> User:
+        """One user, by the id they are known by.
+
+        What comes back is exactly what :meth:`list_users` describes each of its own with, so this
+        is the single-user form of a listing rather than another view of one.
+
+        The id rather than the ERN, because that is what everything else names a user with: a
+        grant's principal, an application's technical identity, the audit trail's ``userId``
+        column. A user of another account is a 404, the way a listing would not have shown them.
+        """
+        return User.from_json(self._call("get-user", {"userId": user_id}).get("user"))
+
     def register(self, user_id: str, password: str, email: str = "", account_id: str = "",
                  region: str = "", is_admin: bool = False) -> User:
         """Creates a user. ``account_id`` and ``region`` default to this session's own."""
@@ -416,6 +428,21 @@ class EuclidSession:
             "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
             "sortColumn": sort_column, "sortDirection": sort_direction}))
 
+    def get_user_group(self, name_or_ern: str) -> UserGroup:
+        """One user group, by name or by ERN, with its members.
+
+        What comes back is exactly what :meth:`list_user_groups` describes each of its own with,
+        member ids included, so this is the single-group form of a listing rather than another
+        view of one.
+
+        A value starting with ``ern:`` is taken as an ERN; anything else is a name. Groups are
+        installation-wide rather than scoped to an account, so a name identifies one without
+        further qualification, and the ERN is accepted only because that is what a grant's
+        principal carries.
+        """
+        payload = {"ern": name_or_ern} if name_or_ern.startswith("ern:") else {"name": name_or_ern}
+        return UserGroup.from_json(self._call("get-user-group", payload).get("userGroup"))
+
     def add_user_to_user_group(self, user_group: str, user: str) -> None:
         """Adds a user to a group. Both are ERNs."""
         self._call("user-group-add-user", {"userGroup": user_group, "user": user})
@@ -435,6 +462,21 @@ class EuclidSession:
         delegated to account owners."""
         return Account.from_json(self._call("create-account", {
             "accountId": account_id, "name": name, "description": description}).get("account"))
+
+    def get_account(self, account_id_or_ern: str) -> Account:
+        """One account, by account ID or by ERN.
+
+        What comes back is exactly what :meth:`list_accounts` describes each of its own with, so
+        this is the single-account form of a listing rather than another view of one.
+
+        An account is named by its ID rather than by its name: the ID is what an ERN's fourth
+        field carries and what every resource in the installation is scoped by, while the name is
+        descriptive and addresses nothing. A value starting with ``ern:`` is taken as an ERN and
+        names the same account. Administrator only.
+        """
+        payload = ({"ern": account_id_or_ern} if account_id_or_ern.startswith("ern:")
+                   else {"accountId": account_id_or_ern})
+        return Account.from_json(self._call("get-account", payload).get("account"))
 
     def list_accounts(self, prefix: str = "", page_size: int = 10, page_index: int = 0,
                       sort_column: str = "accountId", sort_direction: str = "asc") -> ListAccountsResult:
@@ -584,7 +626,9 @@ class EuclidSession:
         """
         self._call("revoke-role", {"grantId": grant_id})
 
-    def list_grants(self, principal: str = "", role: str = "", account_id: str = "") -> ListGrantsResult:
+    def list_grants(self, principal: str = "", role: str = "", account_id: str = "",
+                    page_size: int = 0, page_index: int = 0, sort_column: str = "principal",
+                    sort_direction: str = "asc") -> ListGrantsResult:
         """Lists grants: by principal, by role, or - giving neither - a whole account.
 
         The two questions this model exists to answer are "what may they do" and "who can do this";
@@ -594,9 +638,18 @@ class EuclidSession:
         Note that ``principal`` shows that principal's *own* grants and not those of the groups it
         belongs to, which is a different question - :meth:`check_permission` answers the combined
         one.
+
+        The whole-account listing is the one that grows: it is one row per principal per role. It
+        is paged with ``page_size``, which defaults to 0 and returns everything.
+        ``ListGrantsResult.total`` is how many grants match the filter rather than how many this
+        page holds, so it is what says whether there is another page. Results are ordered by
+        ``sort_column`` whether or not they are paged, because paging an unordered collection can
+        show the same grant on two pages and never show another.
         """
         return ListGrantsResult.from_json(self._call("list-grants", {
-            "principal": principal, "role": role, "accountId": account_id}))
+            "principal": principal, "role": role, "accountId": account_id,
+            "pageSize": page_size, "pageIndex": page_index,
+            "sortColumn": sort_column, "sortDirection": sort_direction}))
 
     def check_permission(self, user_id: str, target: str, action: str, namespace: str = "",
                          resource_ern: str = "") -> PermissionCheck:

@@ -267,6 +267,58 @@ def test_list_users_parses_the_response(gateway):
     assert result.users[1].email == ""
 
 
+def test_get_user_sends_the_id_and_parses_the_user(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "get-user", {"user": {
+        "userId": "jens", "ern": "ern:eam:user/jens", "email": "jens@example.com",
+        "accountId": "000000000000", "region": "eu-central-1", "created": "2026-01-01"}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        user = session.get_user("jens")
+
+    assert gateway.last().json() == {"userId": "jens"}
+    assert user.user_id == "jens"
+    assert user.ern == "ern:eam:user/jens"
+    assert user.email == "jens@example.com"
+
+
+def test_get_user_reads_the_same_shape_a_listing_does(gateway):
+    """One parser behind both, so a field added to the user is picked up by both or by neither."""
+    prepared(gateway)
+    document = {"userId": "jens", "ern": "ern:eam:user/jens", "email": "jens@example.com"}
+    gateway.answer("eam", "get-user", {"user": document})
+    gateway.answer("eam", "list-users", {"total": 1, "users": [document]})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        assert session.get_user("jens") == session.list_users().users[0]
+
+
+def test_get_user_group_sends_the_name_and_parses_the_members(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "get-user-group", {"userGroup": {
+        "name": "ops", "ern": "ern:eam:user-group/ops", "description": "operations",
+        "userIds": ["jens", "alice"]}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        group = session.get_user_group("ops")
+
+    assert gateway.last().json() == {"name": "ops"}
+    assert group.name == "ops"
+    assert group.user_ids == ["jens", "alice"]
+
+
+def test_get_user_group_asks_by_ern_when_given_one(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "get-user-group", {"userGroup": {"name": "ops"}})
+
+    # A name and an ERN are told apart here rather than by the caller, so one method serves both -
+    # the ERN being what a grant's principal carries.
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        session.get_user_group("ern:eam:eu-central-1:1:dev:user-group:ops")
+
+    assert gateway.last().json() == {"ern": "ern:eam:eu-central-1:1:dev:user-group:ops"}
+
+
 def test_accounts_groups_and_namespaces_round_trip(gateway):
     prepared(gateway)
     gateway.answer("eam", "create-account", {"account": {"accountId": "111", "name": "acme",
@@ -284,6 +336,32 @@ def test_accounts_groups_and_namespaces_round_trip(gateway):
         assert session.list_accounts().total == 1
         assert session.list_namespaces("111").namespaces[0].name == "prod"
         assert session.list_user_groups().user_groups[0].name == "ops"
+
+
+def test_get_account_sends_the_id_and_parses_the_account(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "get-account", {"account": {
+        "accountId": "111", "name": "acme", "ern": "ern:eam:account/111",
+        "description": "an account"}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        account = session.get_account("111")
+
+    assert gateway.last().json() == {"accountId": "111"}
+    assert account.account_id == "111"
+    assert account.name == "acme"
+    assert account.ern == "ern:eam:account/111"
+
+
+def test_get_account_asks_by_ern_when_given_one(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "get-account", {"account": {"accountId": "111"}})
+
+    # An ERN names the same account; the ID is what everything else is scoped by.
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        session.get_account("ern:eam:eu-central-1:111::account:111")
+
+    assert gateway.last().json() == {"ern": "ern:eam:eu-central-1:111::account:111"}
 
 
 def test_access_keys(gateway):
@@ -462,10 +540,30 @@ def test_listing_grants_with_neither_argument_asks_for_the_account(gateway):
     with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
         result = session.list_grants()
 
-    assert gateway.last().json() == {"principal": "", "role": "", "accountId": ""}
+    # A page size of zero is every grant, which is what this call returned before paging existed.
+    assert gateway.last().json() == {"principal": "", "role": "", "accountId": "",
+                                     "pageSize": 0, "pageIndex": 0,
+                                     "sortColumn": "principal", "sortDirection": "asc"}
     assert result.total == 1
     assert result.grants[0].role == "operator"
     assert result.grants[0].grant_id == "g-1"
+
+
+def test_listing_grants_pages_and_reports_the_unpaged_total(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "list-grants", {"grants": [{"grantId": "g-1", "role": "operator"}], "total": 57})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        result = session.list_grants(page_size=25, page_index=2, sort_column="created",
+                                     sort_direction="desc")
+
+    assert gateway.last().json() == {"principal": "", "role": "", "accountId": "",
+                                     "pageSize": 25, "pageIndex": 2,
+                                     "sortColumn": "created", "sortDirection": "desc"}
+    # The total counts every grant matching the filter, not the page - which is what says there is
+    # another page to ask for.
+    assert result.total == 57
+    assert len(result.grants) == 1
 
 
 def test_check_permission_answers_with_the_reason(gateway):

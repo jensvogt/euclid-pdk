@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..dto.ekm import (Certificate, CreateKeyResult, DeleteCertificateResult, DeleteKeyResult,
+from ..dto.ekm import (Certificate, CreateKeyResult, DeleteCertificateResult, DeleteKeyResult, Key,
                        KeyDescriptionResult, ListCertificatesResult, ListKeysResult, RevokeKeyResult)
 from ..exceptions import EuclidServiceError
 from .base import ModuleClient
@@ -85,6 +85,21 @@ class EuclidEkm(ModuleClient):
         return ListKeysResult.from_json(self._call("list-keys", {
             "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
             "sortColumn": sort_column, "sortDirection": sort_direction}))
+
+    def get_key(self, name_or_ern: str) -> Key:
+        """One key, by name or by ERN. Its description, never its material.
+
+        What comes back is exactly what :meth:`list_keys` describes each of its own with - name,
+        ERN, description, algorithm, length, status, tags and timestamps - so this is the
+        single-key form of a listing rather than another view of one.
+
+        A value starting with ``ern:`` is taken as an ERN and names one key in the installation;
+        anything else is a name and is resolved in the session's own account and namespace, the
+        pair :meth:`create_key` built the ERN from. A key that exists only in another namespace is
+        a 404 when asked for by name.
+        """
+        payload = {"ern": name_or_ern} if name_or_ern.startswith("ern:") else {"name": name_or_ern}
+        return Key.from_json(self._call("get-key", payload).get("key"))
 
     def delete_key(self, key_id: str,
                    pending_window_in_days: int = DEFAULT_PENDING_WINDOW_DAYS) -> DeleteKeyResult:

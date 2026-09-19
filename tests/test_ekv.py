@@ -123,15 +123,15 @@ def test_a_table_without_a_sort_key_says_so_by_leaving_it_empty(gateway, ekv):
     assert table.sort_key == "" and table.sort_key_type == ""
 
 
-def test_describing_listing_and_deleting_tables(gateway, ekv):
-    gateway.answer("ekv", "describe-table", {"name": TABLE, "partitionKey": "userId",
-                                             "itemCount": 42})
+def test_getting_listing_and_deleting_tables(gateway, ekv):
+    gateway.answer("ekv", "get-table", {"name": TABLE, "partitionKey": "userId",
+                                        "itemCount": 42})
     gateway.answer("ekv", "list-tables", {"total": 2, "tables": [
         {"name": TABLE, "partitionKey": "userId", "sortKey": "startedAt", "itemCount": 42},
         {"name": "profiles"}]})
     gateway.answer("ekv", "delete-table", {"deletedItems": 42})
 
-    assert ekv.describe_table(TABLE).item_count == 42
+    assert ekv.get_table(TABLE).item_count == 42
     assert gateway.last().json() == {"name": TABLE}
 
     listed = ekv.list_tables(prefix="ses", page_size=25, sort_direction="desc")
@@ -143,6 +143,17 @@ def test_describing_listing_and_deleting_tables(gateway, ekv):
 
     assert ekv.delete_table(TABLE) == 42
     assert gateway.last().json() == {"name": TABLE}
+
+
+def test_the_deprecated_describe_table_sends_the_new_action(gateway, ekv):
+    gateway.answer("ekv", "get-table", {"name": TABLE, "itemCount": 42})
+
+    # Kept for callers that still name it the old way, but describe-table no longer exists
+    # server-side - so the delegate has to send get-table rather than what it is named after.
+    with pytest.deprecated_call():
+        assert ekv.describe_table(TABLE).item_count == 42
+
+    assert gateway.last().action == "get-table"
 
 
 # -- items ----------------------------------------------------------------------------------------

@@ -104,7 +104,7 @@ def walk(ekv, table: str) -> None:
           f"{[(i['userId'], i['host']) for i in scanned.items]}")
     print("  a scan reads the table rather than a partition: fine for an export, wrong for a lookup")
 
-    described = ekv.describe_table(table)
+    described = ekv.get_table(table)
     print(f"\n{described.name} holds {described.item_count} item(s)")
 
     tables = ekv.list_tables(page_size=5)

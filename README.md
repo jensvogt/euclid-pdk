@@ -195,10 +195,10 @@ credentials file; the retry then has a fresh token to use.
 
 | Method | Action |
 | --- | --- |
-| `list_users`, `register`, `delete_user` | users |
+| `list_users`, `get_user`, `register`, `delete_user` | users |
 | `create_access_key`, `list_access_keys`, `delete_access_key` | the caller's own signing credentials |
-| `create_user_group`, `list_user_groups`, `delete_user_group`, `add_user_to_user_group`, `remove_user_from_user_group` | groups |
-| `create_account`, `list_accounts`, `delete_account` | accounts |
+| `create_user_group`, `list_user_groups`, `get_user_group`, `delete_user_group`, `add_user_to_user_group`, `remove_user_from_user_group` | groups |
+| `create_account`, `list_accounts`, `get_account`, `delete_account` | accounts |
 | `create_namespace`, `list_namespaces`, `delete_namespace` | namespaces |
 | `create_role`, `update_role`, `get_role`, `list_roles`, `delete_role` | what a set of permissions is called |
 | `grant_role`, `revoke_role`, `list_grants` | who may do what, and where |
@@ -231,6 +231,7 @@ grant = session.grant_role("topic-publisher", user.ern, namespaces=["production"
 session.list_grants(principal=user.ern)      # what may they do
 session.list_grants(role="topic-publisher")  # who can do this
 session.list_grants()                        # everything granted in the account
+session.list_grants(page_size=50)            # ...one page of it; total counts them all
 
 session.revoke_role(grant.grant_id)
 ```
@@ -519,7 +520,7 @@ plumbing behind it rather than something to subscribe to.
 
 | Method | Action |
 | --- | --- |
-| `create_key`, `list_keys`, `set_key_description`, `add_key_tag`, `delete_key_tag` | keys |
+| `create_key`, `list_keys`, `get_key`, `set_key_description`, `add_key_tag`, `delete_key_tag` | keys |
 | `revoke_key`, `delete_key` | ending one |
 | `encrypt`, `decrypt` | using one |
 | `import_certificate`, `create_certificate`, `get_certificate`, `list_certificates`, `delete_certificate` | certificates |
@@ -589,7 +590,7 @@ names none of the three raises `ValueError` here rather than costing a round tri
 
 | Method | Action |
 | --- | --- |
-| `create_table`, `describe_table`, `list_tables`, `delete_table` | tables |
+| `create_table`, `get_table`, `list_tables`, `delete_table` | tables |
 | `put_item`, `get_item`, `find_item`, `delete_item` | items, one at a time |
 | `query` | the items of one partition, in sort-key order |
 | `scan` | a table's items without regard to their key |

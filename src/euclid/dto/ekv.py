@@ -100,7 +100,7 @@ class TableDescription:
 class ListTablesResult:
     """One page of tables, and how many exist in total.
 
-    Each is described as :meth:`~euclid.modules.ekv.EuclidEkv.describe_table` would describe it,
+    Each is described as :meth:`~euclid.modules.ekv.EuclidEkv.get_table` would describe it,
     item count included - which is counted per table, so a large page of large tables costs what
     those counts cost.
     """
