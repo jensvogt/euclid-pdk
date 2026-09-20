@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ..dto.com import Variant
-from ..dto.esm import (Bucket, BucketEvent, CreateBucketResult, CreateDownloadResult, CreateUploadResult,
+from ..dto.esm import (AbortUploadResult, Bucket, BucketEvent, CreateBucketResult, CreateDownloadResult, CreateUploadResult,
                        DeleteBucketResult, DeleteObjectsResult, DisableEncryptionResult, EnableEncryptionResult,
                        EsmObject,
                        ListBucketsResult, ListObjectsResult, ObjectAttribute, PurgeBucketResult,
@@ -595,6 +595,25 @@ class EuclidEsm(ModuleClient):
         return StoredObject.from_json(self._call_with_retry(
             "complete-upload", {"uploadId": upload_id},
             self._attribute_headers(attributes, system_attributes)))
+
+    def abort_upload(self, upload_id: str) -> AbortUploadResult:
+        """Throws away a multipart upload that will not be finished.
+
+        Discards the parts staged under ``upload_id`` and - for a first upload - the object row
+        that was seeded for bytes which never arrived. A *re-upload*'s object row is left exactly
+        as it is: that row is the previous version of the object, still published and still
+        readable, and not this upload's to delete. ``AbortUploadResult.object_removed`` says which
+        happened.
+
+        :meth:`upload_file` does not need this - it completes or it fails within one call. What
+        needs it is an upload nothing is driving any more: one whose client was killed, or one the
+        API gateway abandoned. The id comes from a log or from whatever started the upload, which
+        is why this takes one rather than being folded into the multipart helpers.
+
+        An upload that has already completed answers 404, because there is no longer any such
+        upload.
+        """
+        return AbortUploadResult.from_json(self._call("abort-upload", {"uploadId": upload_id}))
 
     def _create_download(self, bucket_ern: str, key: str, concurrency: int) -> CreateDownloadResult:
         """Opens a multipart download, which stages the object and says how large it is.

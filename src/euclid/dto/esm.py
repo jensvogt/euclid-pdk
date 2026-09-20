@@ -30,6 +30,7 @@ __all__ = [
     "SetBucketInternalResult",
     "PurgeBucketResult",
     "DeleteObjectsResult",
+    "AbortUploadResult",
     "TouchObjectResult",
     "EnableEncryptionResult",
     "DisableEncryptionResult",
@@ -303,6 +304,30 @@ class DeleteObjectsResult:
     def from_json(document: Any) -> "DeleteObjectsResult":
         return DeleteObjectsResult(_json.text(document, "ern"), _json.number(document, "asked"),
                                    _json.number(document, "objects"), _json.flag(document, "async"))
+
+
+@dataclass
+class AbortUploadResult:
+    """What an abandoned upload was, and what became of the object it was writing.
+
+    ``object_removed`` is true for a first upload, whose row described bytes that never arrived,
+    and false for a re-upload, where the row is the previous version - still published, still
+    readable, and not this upload's to delete. Worth reading rather than assuming: "the upload is
+    gone" and "the object is gone" are different outcomes, and a caller cleaning up after a failure
+    needs to know which one they got.
+    """
+
+    upload_id: str = ""
+    bucket_ern: str = ""
+    key: str = ""
+    parts: int = 0
+    object_removed: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "AbortUploadResult":
+        return AbortUploadResult(_json.text(document, "uploadId"), _json.text(document, "bucketErn"),
+                                 _json.text(document, "key"), _json.number(document, "parts"),
+                                 _json.flag(document, "objectRemoved"))
 
 
 @dataclass

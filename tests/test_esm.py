@@ -241,6 +241,34 @@ def test_touching_a_bucket_in_the_background(gateway, esm):
     assert (result.objects, result.background, result.bucket_name) == (900, True, "reports")
 
 
+def test_aborting_an_upload_says_what_was_discarded(gateway, esm):
+    gateway.answer("esm", "abort-upload", {"uploadId": "upload-1", "bucketErn": BUCKET,
+                                           "key": "onix/big.xml", "parts": 12, "objectRemoved": True})
+
+    result = esm.abort_upload("upload-1")
+
+    assert gateway.last().json() == {"uploadId": "upload-1"}
+    assert (result.key, result.parts, result.object_removed) == ("onix/big.xml", 12, True)
+
+
+def test_aborting_a_re_upload_leaves_the_published_object(gateway, esm):
+    """The row is the previous version - still published, still readable - so it is not removed,
+    and the difference is what a caller cleaning up after a failure has to be able to see."""
+    gateway.answer("esm", "abort-upload", {"uploadId": "upload-1", "parts": 3, "objectRemoved": False})
+
+    assert not esm.abort_upload("upload-1").object_removed
+
+
+def test_aborting_an_upload_that_is_not_there(gateway, esm):
+    # Also what a completed upload answers, since completing it takes the staging with it.
+    gateway.answer("esm", "abort-upload", {"error": "Upload not found, id: gone"}, status=404)
+
+    with pytest.raises(EuclidServiceError) as raised:
+        esm.abort_upload("gone")
+
+    assert raised.value.status == 404
+
+
 def test_listing_objects_parses_their_attributes(gateway, esm, storage):
     esm.put_object(BUCKET, "2026/q3.pdf", b"a report")
 

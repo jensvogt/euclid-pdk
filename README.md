@@ -277,7 +277,7 @@ connection.
 | `add_bucket_tag`, `set_bucket_tag`, `delete_bucket_tag` | bucket tags |
 | `set_bucket_internal` | whether a bucket is euclid's own plumbing, and so left out of listings |
 | `enable_encryption`, `disable_encryption` | encryption at rest, under an EKM key |
-| `put_object`, `get_object`, `upload_file`, `download_file` | an object's bytes |
+| `put_object`, `get_object`, `upload_file`, `download_file`, `abort_upload` | an object's bytes |
 | `list_objects`, `copy_object`, `move_object`, `rename_object` | objects |
 | `count_objects`, `get_object_count` | how many there are: counted exactly, or the bucket's stored running total |
 | `delete_object`, `delete_objects`, `purge_bucket` | deleting them |
