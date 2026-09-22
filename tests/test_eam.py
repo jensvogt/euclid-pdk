@@ -380,6 +380,56 @@ def test_access_keys(gateway):
     assert gateway.last().json() == {"accessKeyId": "AKIANEW"}
 
 
+# -- passwords -------------------------------------------------------------------------------
+
+
+def test_changing_your_own_password_names_nobody(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "change-password", {})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        session.change_password("old-one", "new-one")
+
+    # No userId at all: an absent one is what tells the server this is the change, not the reset.
+    assert gateway.last().json() == {"oldPassword": "old-one", "newPassword": "new-one"}
+
+
+def test_resetting_somebody_elses_password_names_them_and_sends_no_old_one(gateway):
+    prepared(gateway)
+    gateway.answer("eam", "change-password", {})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        session.reset_password("jill", "new-one")
+
+    assert gateway.last().json() == {"userId": "jill", "newPassword": "new-one"}
+
+
+def test_resetting_your_own_password_is_refused_before_it_is_sent(gateway):
+    """The server reads a request naming yourself as the change, and would refuse this one for the
+    old password it did not get - a confusing way to learn you wanted the other method."""
+    prepared(gateway)
+    gateway.answer("eam", "change-password", {})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        with pytest.raises(ValueError, match="another user's password"):
+            session.reset_password(session.user_id, "new-one")
+
+    assert gateway.last().action == "login"
+
+
+def test_a_wrong_old_password_is_a_service_error_not_a_lost_session(gateway):
+    """403 rather than 401, so a typo does not read as an expired session."""
+    prepared(gateway)
+    gateway.answer("eam", "change-password", {"error": "The old password is not correct"}, status=403)
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        with pytest.raises(EuclidServiceError) as raised:
+            session.change_password("wrong", "new-one")
+
+    assert (raised.value.target, raised.value.action, raised.value.status) == ("eam", "change-password", 403)
+    assert raised.value.reason == "The old password is not correct"
+
+
 def test_the_actions_that_return_nothing_still_check_the_status(gateway):
     prepared(gateway)
     gateway.answer("eam", "delete-user", {"error": "User not found"}, status=404)

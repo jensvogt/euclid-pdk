@@ -379,6 +379,45 @@ class EuclidSession:
         """Deletes a user."""
         self._call("delete-user", {"userId": user_id})
 
+    # -- passwords ---------------------------------------------------------------------------
+    #
+    # One server action ("change-password") behind two methods, because it does two things and
+    # which of them it does is decided by whether a user is named. Wrapped as two so that neither
+    # can be reached by accident: a reset is not a change with the old password left out, and a
+    # change is not a reset aimed at yourself.
+
+    def change_password(self, old_password: str, new_password: str) -> None:
+        """Changes this session's own password.
+
+        The old password is what proves the change may be made - a token alone is not enough, so
+        one left behind cannot be turned into the account itself.
+
+        This session keeps working: its bearer token is verified against the server's signing
+        secret rather than against the password, so it stays valid until it expires, and the new
+        password is what the next login wants. Access keys are untouched.
+
+        Raises :class:`EuclidServiceError` if the old password is wrong (403), or if this user does
+        not log in with a password at all (409) - a federated identity or an application's
+        technical principal.
+        """
+        # No userId: the server reads an absent one as "mine", which is all this method means.
+        self._call("change-password", {"oldPassword": old_password, "newPassword": new_password})
+
+    def reset_password(self, user_id: str, new_password: str) -> None:
+        """Resets another user's password. Administrator only.
+
+        No old password, because an administrator is not supposed to know one; being an
+        administrator is the proof instead.
+
+        Aiming this at yourself raises :class:`ValueError` rather than reaching the server, which
+        reads a request naming yourself as the *change* and would refuse it for the old password it
+        did not get - a confusing way to learn you wanted :meth:`change_password`.
+        """
+        if user_id == self.user_id:
+            raise ValueError("reset_password() is for another user's password; "
+                             "use change_password(old_password, new_password) for your own")
+        self._call("change-password", {"userId": user_id, "newPassword": new_password})
+
     # -- namespace scoping -------------------------------------------------------------------
 
     def change_namespace(self, namespace: str) -> "EuclidSession":
