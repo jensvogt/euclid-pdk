@@ -170,6 +170,74 @@ class EuclidEap(ModuleClient):
             payload["namespace"] = namespace
         return self._application("update-application", payload)
 
+    def copy_application(self, application_id: str, target_namespace: str,
+                         target_application_id: str | None = None) -> Application:
+        """Defines the same application again in another namespace, leaving the original running.
+
+        The sibling of moving one with ``update_application(namespace=...)``, and the difference is
+        the point: a move takes the definition with it, so what ran in the old namespace stops
+        running there. A copy is how a build is promoted - development to integration, integration
+        to production - while the namespace it came from goes on serving.
+
+        The copy runs the same artifact, down to the checksum, so it is the same bytes rather than
+        a rebuild that happens to share a version. It is given its own runtime name and its own
+        technical principal with its own access key, both being installation-wide and unshareable,
+        so revoking the copy's credentials leaves the original running. An application told to run
+        as a named user keeps that user.
+
+        What it may reach is re-resolved rather than copied: a bucket or queue ERN carries the
+        namespace it was resolved in, so copying the list would point the new application at the
+        old namespace's data. The same names are looked up in the target namespace, and one with no
+        counterpart there fails the copy with HTTP 404 rather than quietly leaving the application
+        with less access than the original.
+
+        The copy is created stopped whatever the original is doing - a copy that started itself
+        would put a second consumer on the target namespace's queues the moment this returned.
+
+        :param application_id: the application to copy, in the namespace this session works in
+        :param target_namespace: the namespace to copy it into; it has to exist already
+        :param target_application_id: the name the copy is defined under, or None for the
+            original's. Naming it is how an application is copied beside itself in one namespace.
+        """
+        payload: dict[str, Any] = {"applicationId": application_id,
+                                   "targetNamespace": target_namespace}
+        if target_application_id is not None:
+            payload["targetApplicationId"] = target_application_id
+        return self._application("copy-application", payload)
+
+    def scale_application(self, application_id: str, min_instances: int | None = None,
+                          max_instances: int | None = None) -> Application:
+        """Changes how many instances an application runs, without restarting the ones it has.
+
+        :meth:`update_application` can set the same two fields, but it writes the whole definition
+        and stamps the modification date - and the manager restarts a pool whose application
+        changed since it started it. Scaling that way stops every running instance and starts it
+        again, which is the opposite of what asking for capacity means and worst at the moment it
+        is asked for.
+
+        What is set is the range the autoscaler works within, not a count: the manager scales
+        toward it on its next reconcile, adding instances one at a time and stopping idle ones as
+        the load allows. Nothing is started or stopped by this call. Passing the same number for
+        both pins the pool at that size and leaves the autoscaler nothing to decide.
+
+        A bound left as None is left as it stands, so a ceiling can be raised without touching the
+        floor. The two are checked against each other as they *will* stand rather than as they are,
+        so raising only the floor is refused with HTTP 400 when it would pass the stored ceiling. A
+        floor of zero is refused for its own reason: an application desired RUNNING with no
+        instances reads everywhere as a pool that failed to start, and :meth:`stop_application` is
+        how one is taken out of service.
+
+        :param application_id: the application to scale
+        :param min_instances: smallest number of instances to keep running, or None to leave it
+        :param max_instances: largest number the autoscaler may run, or None to leave it
+        """
+        payload: dict[str, Any] = {"applicationId": application_id}
+        if min_instances is not None:
+            payload["minInstances"] = min_instances
+        if max_instances is not None:
+            payload["maxInstances"] = max_instances
+        return self._application("scale-application", payload)
+
     def redeploy_application(self, application_id: str, artifact: str = "",
                              version: str = "") -> Application:
         """Points an application at a new build of itself.

@@ -39,6 +39,34 @@ def eqs(gateway, queues):
 # -- queues ------------------------------------------------------------------------------------
 
 
+def test_a_batch_sends_many_and_names_what_it_would_not(gateway, eqs):
+    gateway.answer("eqs", "send-message-batch", {
+        "ern": "ern:queue/orders", "asked": 3, "sent": 2,
+        "messageIds": ["id-0", "id-2"],
+        "failed": [{"index": 1, "reason": "message is 2048 bytes, and this queue accepts 1024"}]})
+
+    result = eqs.send_message_batch("orders", [
+        {"body": "first"},
+        {"body": "second"},
+        {"body": "third", "priority": "HIGH"},
+    ])
+
+    assert result.asked == 3
+    assert result.sent == 2
+    assert result.message_ids == ["id-0", "id-2"]
+    assert len(result.failed) == 1
+    # The index is the only thing mapping a rejection back to the message the caller sent.
+    assert result.failed[0].index == 1
+
+    # An unset field is left out of the entry entirely - an empty priority would override a queue
+    # configured otherwise.
+    body = gateway.last().json()
+    assert body["ern"] == "orders"
+    assert len(body["messages"]) == 3
+    assert body["messages"][0] == {"body": "first"}
+    assert body["messages"][2]["priority"] == "HIGH"
+
+
 def test_create_and_list_queues(gateway, eqs):
     gateway.answer("eqs", "create-queue", {"name": "orders", "ern": QUEUE})
     gateway.answer("eqs", "list-queues", {"total": 2, "queues": [

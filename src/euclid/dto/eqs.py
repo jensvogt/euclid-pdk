@@ -20,6 +20,8 @@ __all__ = [
     "CreateQueueResult",
     "ListQueuesResult",
     "MessagesResult",
+    "SendBatchFailure",
+    "SendBatchResult",
     "QueueMetadata",
     "MessageCount",
     "MessageMetadata",
@@ -184,6 +186,51 @@ class MessagesResult:
     def from_json(document: Any) -> "MessagesResult":
         return MessagesResult([Message.from_json(m) for m in _json.documents(document, "messages")],
                               _json.number(document, "total"))
+
+
+@dataclass
+class SendBatchFailure:
+    """One message a batch would not send, and why.
+
+    ``index`` is where the message sat in the list you sent. The server minted nothing for a
+    message it did not accept, so the position is the only thing the two sides share.
+    """
+
+    index: int = 0
+    reason: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "SendBatchFailure":
+        return SendBatchFailure(_json.number(document, "index"), _json.text(document, "reason"))
+
+
+@dataclass
+class SendBatchResult:
+    """What a :meth:`~euclid.modules.eqs.EuclidEqs.send_message_batch` did.
+
+    Counts, the ids of what went in request order, and the failures named one by one. ``asked``
+    always equals ``sent`` plus ``len(failed)``.
+
+    The failure list is the part that differs from every other multi-item call in euclid, which
+    only counts. A delete that skipped a key removed something already gone; a send that skipped a
+    message dropped it, and a producer holding "97 of 100" cannot act on that without knowing which
+    three to send again.
+    """
+
+    ern: str = ""
+    asked: int = 0
+    sent: int = 0
+    message_ids: list[str] = field(default_factory=list)
+    failed: list[SendBatchFailure] = field(default_factory=list)
+
+    @staticmethod
+    def from_json(document: Any) -> "SendBatchResult":
+        return SendBatchResult(
+            _json.text(document, "ern"),
+            _json.number(document, "asked"),
+            _json.number(document, "sent"),
+            _json.strings(document, "messageIds"),
+            [SendBatchFailure.from_json(f) for f in _json.documents(document, "failed")])
 
 
 @dataclass

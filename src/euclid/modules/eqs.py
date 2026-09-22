@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..dto.com import Variant
 from ..dto.eqs import (Queue, CreateQueueResult, ListQueuesResult, Message, MessageAttribute, MessageCount,
                        MessageMetadata, MessagesResult, QueueMaxMessageLengthResult, QueueMetadata,
-                       QueueStatusResult, RedriveDlqResult)
+                       QueueStatusResult, RedriveDlqResult, SendBatchResult)
 from .base import ModuleClient
 
 __all__ = ["EuclidEqs", "TARGET", "DEFAULT_VISIBILITY", "DEFAULT_MAX_RETRIES",
@@ -300,6 +300,47 @@ class EuclidEqs(ModuleClient):
         if priority:
             payload["priority"] = priority
         return self._text("send-message", payload, "messageId")
+
+    def send_message_batch(self, queue_ern: str, messages: Sequence[Mapping[str, Any]]) -> SendBatchResult:
+        """Puts several messages on one queue in a single call.
+
+        Each entry is a mapping with the same fields :meth:`send_message` takes for one message -
+        ``body``, and optionally ``attributes``, ``system_attributes`` and ``priority``. The queue
+        is named once, so every message in a batch goes to the same queue.
+
+        The saving over calling :meth:`send_message` in a loop is mostly in the database rather
+        than the round trips: the whole batch is written in one insert, and the queue's counters
+        are adjusted once instead of once per message.
+
+        A message that cannot be sent does not stop the others. The result says how many were asked
+        for and how many went, lists the ids of those that went in request order, and names each
+        rejection by its position in ``messages`` - so a producer retries exactly those rather than
+        the whole batch and duplicates everything else.
+
+        Every message being rejected is still a successful call: the request was well formed and
+        has been answered with a reason for each. Check ``sent``, not the absence of an exception.
+
+        :param queue_ern: the queue ERN, or a bare queue name
+        :param messages: the messages, in the order they are to be sent
+        :raises EuclidServiceException: with status 400 if the batch is empty or over the
+            installation's ``euclid.modules.eqs.max-batch-size`` - mistakes in the request rather
+            than in a message, so there is no partial outcome to report
+        """
+        entries: list[dict[str, Any]] = []
+        for message in messages:
+            entry: dict[str, Any] = {"body": message.get("body", "")}
+            if message.get("attributes"):
+                entry["attributes"] = Variant.map_to_json(message["attributes"])
+            if message.get("system_attributes"):
+                entry["systemAttributes"] = Variant.map_to_json(message["system_attributes"])
+            # Sent only when named: an empty priority is what tells the server to use the queue's
+            # own, and spelling it out as "MEDIUM" here would override a queue configured otherwise.
+            if message.get("priority"):
+                entry["priority"] = message["priority"]
+            entries.append(entry)
+
+        return SendBatchResult.from_json(
+            self._call("send-message-batch", {"ern": queue_ern, "messages": entries}))
 
     def receive_messages(self, queue_ern: str, max_messages: int = 10,
                          wait_time: int = 0) -> MessagesResult:

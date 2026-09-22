@@ -77,6 +77,39 @@ def test_an_application_without_a_named_user_runs_as_one_euclid_made(gateway, ea
     assert application.user_id == "app-order-service"
 
 
+def test_a_copy_names_the_target_namespace(gateway, eap):
+    gateway.answer("eap", "copy-application", APPLICATION)
+
+    eap.copy_application("order-service", "production")
+    assert gateway.last().json() == {"applicationId": "order-service",
+                                     "targetNamespace": "production"}
+
+    # Absent rather than empty when unnamed: the server reads an absent targetApplicationId as
+    # "the original's name", so sending "" would be asking for an application with no name.
+    eap.copy_application("order-service", "development",
+                         target_application_id="order-service-next")
+    assert gateway.last().json() == {"applicationId": "order-service",
+                                     "targetNamespace": "development",
+                                     "targetApplicationId": "order-service-next"}
+
+
+def test_scaling_sends_only_the_bound_it_was_given(gateway, eap):
+    gateway.answer("eap", "scale-application", APPLICATION)
+
+    # A ceiling raised on its own must not carry a floor with it - an absent bound is what tells
+    # the server to leave that one as it stands.
+    eap.scale_application("order-service", max_instances=16)
+    assert gateway.last().json() == {"applicationId": "order-service", "maxInstances": 16}
+
+    eap.scale_application("order-service", min_instances=4)
+    assert gateway.last().json() == {"applicationId": "order-service", "minInstances": 4}
+
+    # Both together pins the pool, which is a normal thing to ask for.
+    eap.scale_application("order-service", min_instances=2, max_instances=2)
+    assert gateway.last().json() == {"applicationId": "order-service",
+                                     "minInstances": 2, "maxInstances": 2}
+
+
 def test_an_update_sends_only_what_it_was_given(gateway, eap):
     gateway.answer("eap", "update-application", APPLICATION)
 
