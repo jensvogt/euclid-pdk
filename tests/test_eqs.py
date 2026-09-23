@@ -486,3 +486,22 @@ def test_a_message_is_asked_for_by_id_not_by_receipt_handle(gateway, eqs):
 
     assert gateway.last().json() == {"messageId": "m-1"}
     assert (message.message_id, message.body, message.received_count) == ("m-1", "hello", 2)
+
+def test_exists_queue_answers_yes_and_no(gateway, eqs):
+    gateway.answer("eqs", "get-queue-ern", {"ern": QUEUE})
+    assert eqs.exists_queue("orders") is True
+
+    gateway.answer("eqs", "get-queue-ern", {"error": "Queue not found, name: nope"}, status=404)
+    assert eqs.exists_queue("nope") is False
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_exists_queue_raises_when_it_could_not_tell(gateway, eqs, status):
+    # The third answer, and the reason this is not a two-state method. A caller that got False from
+    # an expired session would delete and recreate a queue that was there all along, so anything
+    # that is not a 404 has to be raised rather than answered.
+    gateway.answer("eqs", "get-queue-ern", {"error": "not today"}, status=status)
+
+    with pytest.raises(EuclidServiceError) as raised:
+        eqs.exists_queue("orders")
+    assert raised.value.status == status

@@ -29,16 +29,23 @@ from typing import Any, Iterable, Mapping
 from ..dto.eap import Application, LogLevelResult, RestartResult
 from .base import ModuleClient
 
-__all__ = ["EuclidEap", "TARGET", "JAVA", "PYTHON", "NODEJS", "BINARY",
+__all__ = ["EuclidEap", "TARGET", "JAVA", "JAVA21", "JAVA25", "PYTHON", "NODEJS", "BINARY",
            "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "OFF",
            "DEFAULT_MIN_INSTANCES", "DEFAULT_MAX_INSTANCES", "DEFAULT_READY_TIMEOUT_MS"]
 
 TARGET = "eap"
 
 #: What an artifact is handed to. Matched exactly, in upper case, and anything else is refused with
-#: HTTP 400 - a runtime is a category rather than a version, so a JDK 17 and a JDK 25 application
-#: are both :data:`JAVA` and it is the command or the PATH that decides which one runs.
+#: HTTP 400 - :data:`JAVA21` is a runtime, ``java21`` and ``JAVA 21`` are typos.
+#:
+#: :data:`JAVA` is whichever java the host calls java, which is what every application deployed
+#: before the versioned ones said. :data:`JAVA21` and :data:`JAVA25` name a version and are started
+#: with the executable that host has configured for it - a jar built for 25 does not start on 21,
+#: and leaving it to whichever java resolved first made the version an accident of the manager's
+#: PATH.
 JAVA = "JAVA"
+JAVA21 = "JAVA21"
+JAVA25 = "JAVA25"
 PYTHON = "PYTHON"
 NODEJS = "NODEJS"
 #: Anything already executable, which is where C++ and Rust applications land.
@@ -92,7 +99,8 @@ class EuclidEap(ModuleClient):
         The application ID is unique within the account and the namespace it is deployed into,
         rather than across the installation: two namespaces may each deploy a "billing".
 
-        :param runtime: :data:`JAVA`, :data:`PYTHON`, :data:`NODEJS` or :data:`BINARY`.
+        :param runtime: :data:`JAVA`, :data:`JAVA21`, :data:`JAVA25`, :data:`PYTHON`,
+            :data:`NODEJS` or :data:`BINARY`.
         :param bucket: the name of the bucket holding the artifact - a name, not an ERN.
         :param artifact: the artifact's object key within that bucket.
         :param version: what to record as the deployed version. Left empty, the server reads it out

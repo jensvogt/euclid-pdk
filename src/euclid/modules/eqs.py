@@ -26,6 +26,7 @@ from ..dto.com import Variant
 from ..dto.eqs import (Queue, CreateQueueResult, ListQueuesResult, Message, MessageAttribute, MessageCount,
                        MessageMetadata, MessagesResult, QueueMaxMessageLengthResult, QueueMetadata,
                        QueueStatusResult, RedriveDlqResult, SendBatchResult)
+from ..exceptions import EuclidServiceError
 from .base import ModuleClient
 
 __all__ = ["EuclidEqs", "TARGET", "DEFAULT_VISIBILITY", "DEFAULT_MAX_RETRIES",
@@ -160,6 +161,27 @@ class EuclidEqs(ModuleClient):
     def get_queue_ern(self, name: str) -> str:
         """The ERN of the queue of this name, in the session's account and namespace."""
         return self._text("get-queue-ern", {"name": name}, "ern")
+
+    def exists_queue(self, name: str) -> bool:
+        """Whether a queue exists.
+
+        Three answers, not two. ``True`` and ``False`` are the ones a caller expects; the third is
+        an :class:`~euclid.exceptions.EuclidServiceError`, and it is the one that matters. An
+        expired session, an unreachable gateway or a refused permission is not the same as "not
+        there", and returning ``False`` for them would have callers deleting and recreating things
+        over an outage. Only HTTP 404 - the answer that actually says it is absent - becomes
+        ``False``; everything else is raised.
+
+        :param name: name of the queue, resolved in the session's account and namespace.
+        :raises EuclidServiceError: if the question could not be answered.
+        """
+        try:
+            self.get_queue_ern(name)
+        except EuclidServiceError as error:
+            if error.status == 404:
+                return False
+            raise
+        return True
 
     def get_queue_metadata(self, ern: str) -> QueueMetadata:
         """Where a queue lives and how much is in it."""

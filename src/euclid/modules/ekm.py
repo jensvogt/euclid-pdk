@@ -101,6 +101,31 @@ class EuclidEkm(ModuleClient):
         payload = {"ern": name_or_ern} if name_or_ern.startswith("ern:") else {"name": name_or_ern}
         return Key.from_json(self._call("get-key", payload).get("key"))
 
+    def exists_key(self, name_or_ern: str) -> bool:
+        """Whether a key exists.
+
+        Three answers, not two. ``True`` and ``False`` are the ones a caller expects; the third is
+        an :class:`~euclid.exceptions.EuclidServiceError`, and it is the one that matters. An
+        expired session, an unreachable gateway or a refused permission is not the same as "not
+        there", and returning ``False`` for them would have callers deleting and recreating things
+        over an outage. Only HTTP 404 - the answer that actually says it is absent - becomes
+        ``False``; everything else is raised.
+
+        Reads the key's description, never its material. A revoked or pending-deletion key still
+        exists and this returns ``True`` for it; :meth:`get_key` carries the status that tells
+        those apart.
+
+        :param name_or_ern: name of the key in the session's account and namespace, or a full ERN.
+        :raises EuclidServiceError: if the question could not be answered.
+        """
+        try:
+            self.get_key(name_or_ern)
+        except EuclidServiceError as error:
+            if error.status == 404:
+                return False
+            raise
+        return True
+
     def delete_key(self, key_id: str,
                    pending_window_in_days: int = DEFAULT_PENDING_WINDOW_DAYS) -> DeleteKeyResult:
         """Schedules a key for deletion, and returns the date it goes for good.

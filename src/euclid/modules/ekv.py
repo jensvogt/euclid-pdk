@@ -96,6 +96,30 @@ class EuclidEkv(ModuleClient):
         """
         return TableDescription.from_json(self._call("get-table", {"name": name}))
 
+    def exists_table(self, name: str) -> bool:
+        """Whether a table exists.
+
+        Three answers, not two. ``True`` and ``False`` are the ones a caller expects; the third is
+        an :class:`~euclid.exceptions.EuclidServiceError`, and it is the one that matters. An
+        expired session, an unreachable gateway or a refused permission is not the same as "not
+        there", and returning ``False`` for them would have callers deleting and recreating things
+        over an outage. Only HTTP 404 - the answer that actually says it is absent - becomes
+        ``False``; everything else is raised.
+
+        Costs a query on a large table: ``get-table`` counts the table's items to answer, and EKV
+        has no by-name lookup that does not.
+
+        :param name: name of the table.
+        :raises EuclidServiceError: if the question could not be answered.
+        """
+        try:
+            self.get_table(name)
+        except EuclidServiceError as error:
+            if error.status == 404:
+                return False
+            raise
+        return True
+
     def describe_table(self, name: str) -> TableDescription:
         """One table.
 

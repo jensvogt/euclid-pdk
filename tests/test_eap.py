@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from euclid import Euclid, EuclidServiceError
-from euclid.modules.eap import DEBUG, JAVA, PYTHON
+from euclid.modules.eap import BINARY, DEBUG, JAVA, JAVA21, JAVA25, NODEJS, PYTHON
 from test_eam import prepared
 
 APPLICATION = {
@@ -339,3 +339,15 @@ def test_metrics_and_call(gateway, eap):
     assert eap.metrics() == {"items": [{"name": "eap-instances", "value": 2}]}
     assert eap.call("some-future-action", {"x": 1}) == {"ok": True}
     assert gateway.last().json() == {"x": 1}
+
+
+def test_the_runtime_constants_are_the_strings_eap_accepts():
+    # Spelled by hand rather than derived, because the server matches them exactly and refuses
+    # anything else with a 400. A constant that drifted to "JAVA-21" would still read perfectly in
+    # calling code and fail only against a running installation.
+    assert (JAVA, JAVA21, JAVA25, PYTHON, NODEJS, BINARY) == (
+        "JAVA", "JAVA21", "JAVA25", "PYTHON", "NODEJS", "BINARY")
+
+    # Three distinct runtimes, not one with aliases: a jar built for 25 does not start on 21, so
+    # asking for one and getting the other is the failure these exist to prevent.
+    assert len({JAVA, JAVA21, JAVA25}) == 3

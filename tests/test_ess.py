@@ -171,3 +171,33 @@ def test_metrics_and_call(gateway, ess):
     assert ess.metrics() == {"items": [{"name": "ess-secrets", "value": 3}]}
     assert ess.call("some-future-action", {"x": 1}) == {"ok": True}
     assert gateway.last().json() == {"x": 1}
+
+def test_exists_secret_asks_the_listing_and_never_the_value(gateway, ess):
+    # The point of the method. get-secret answers with the decrypted value, so an existence check
+    # built on it would need permission to read the password and would leave an audit entry saying
+    # somebody did. This asks list-secrets, which never returns a value.
+    gateway.answer("ess", "list-secrets",
+                   {"secrets": [{"name": "db-password"}, {"name": "db-password-old"}], "total": 2})
+
+    assert ess.exists_secret("db-password") is True
+
+    sent = gateway.last().json()
+    assert sent["prefix"] == "db-password"
+    # The whole matching page, or a longer name could crowd the exact one off page one.
+    assert sent["pageSize"] == 0
+
+
+def test_exists_secret_matches_the_name_exactly(gateway, ess):
+    # The prefix also matches longer names, so the narrowing has to happen here: "db-password" is a
+    # prefix of "db-password-old" and is not itself a secret in this answer.
+    gateway.answer("ess", "list-secrets", {"secrets": [{"name": "db-password-old"}], "total": 1})
+
+    assert ess.exists_secret("db-password") is False
+
+
+def test_exists_secret_raises_when_it_could_not_tell(gateway, ess):
+    gateway.answer("ess", "list-secrets", {"error": "not today"}, status=403)
+
+    with pytest.raises(EuclidServiceError) as raised:
+        ess.exists_secret("db-password")
+    assert raised.value.status == 403

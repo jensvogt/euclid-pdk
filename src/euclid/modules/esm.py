@@ -178,6 +178,29 @@ class EuclidEsm(ModuleClient):
         """The ERN of the bucket of this name, in the session's account and namespace."""
         return self._text("get-bucket-ern", {"name": name}, "ern")
 
+    def exists_bucket(self, name: str) -> bool:
+        """Whether a bucket exists.
+
+        Three answers, not two. ``True`` and ``False`` are the ones a caller expects; the third is
+        an :class:`~euclid.exceptions.EuclidServiceError`, and it is the one that matters. An
+        expired session, an unreachable gateway or a refused permission is not the same as "not
+        there", and returning ``False`` for them would have callers deleting and recreating things
+        over an outage. Only HTTP 404 - the answer that actually says it is absent - becomes
+        ``False``; everything else is raised.
+
+        Asks about the bucket, not about anything in it: an empty bucket exists.
+
+        :param name: name of the bucket, resolved in the session's account and namespace.
+        :raises EuclidServiceError: if the question could not be answered.
+        """
+        try:
+            self.get_bucket_ern(name)
+        except EuclidServiceError as error:
+            if error.status == 404:
+                return False
+            raise
+        return True
+
     def get_bucket_size(self, ern: str) -> int:
         """How many bytes a bucket holds."""
         return self._number("get-bucket-size", {"ern": ern}, "size")

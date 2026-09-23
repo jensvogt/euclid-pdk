@@ -62,6 +62,32 @@ class EuclidEss(ModuleClient):
             "prefix": prefix, "pageSize": page_size, "pageIndex": page_index,
             "sortColumn": sort_column, "sortDirection": sort_direction}))
 
+    def exists_secret(self, name: str) -> bool:
+        """Whether a secret exists.
+
+        Three answers, not two. ``True`` and ``False`` are the ones a caller expects; the third is
+        an :class:`~euclid.exceptions.EuclidServiceError`, and it is the one that matters. An
+        expired session, an unreachable gateway or a refused permission is not the same as "not
+        there", and returning ``False`` for them would have callers recreating secrets over an
+        outage.
+
+        Asks :meth:`list_secrets` rather than :meth:`get_secret`, deliberately. ``get-secret``
+        answers with the decrypted value, so asking it whether a secret exists would mean holding
+        ``ess:get-secret`` - permission to read the password rather than to know the name is taken -
+        decrypting it, carrying the plaintext back across the wire, and leaving an audit entry
+        indistinguishable from somebody actually reading it. None of that is any part of the
+        question. This needs ``ess:list-secrets`` and never touches the value.
+
+        The whole matching page is asked for rather than the default ten, because the prefix also
+        matches longer names - ``"db-password"`` matches ``"db-password-old"`` too - and a name could
+        otherwise be called absent because longer ones crowded it off page one.
+
+        :param name: name of the secret, matched exactly.
+        :raises EuclidServiceError: if the question could not be answered.
+        """
+        matching = self.list_secrets(prefix=name, page_size=0)
+        return any(secret.name == name for secret in matching.secrets)
+
     def rotate_secret(self, name: str, value: str) -> Secret:
         """Replaces a secret's value, which is what a rotation is and what bumps its version."""
         return self.update_secret(name, value=value)

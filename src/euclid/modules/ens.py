@@ -33,6 +33,7 @@ from ..dto.ens import (Message, Topic, CreateTopicResult, ListTopicsResult, Mess
                        MessagesResult, ResendResult, SubscribeResult, Subscription,
                        TopicMaxMessageLengthResult, TopicMetadata, TopicRetentionResult,
                        TopicStateResult)
+from ..exceptions import EuclidServiceError
 from .base import ModuleClient
 
 __all__ = ["EuclidEns", "TARGET", "QUEUE", "DEFAULT_MAX_MESSAGE_LENGTH", "RUNNING", "STOPPED",
@@ -122,6 +123,27 @@ class EuclidEns(ModuleClient):
     def get_topic_ern(self, name: str) -> str:
         """The ERN of the topic of this name, in the session's account and namespace."""
         return self._text("get-topic-ern", {"name": name}, "ern")
+
+    def exists_topic(self, name: str) -> bool:
+        """Whether a topic exists.
+
+        Three answers, not two. ``True`` and ``False`` are the ones a caller expects; the third is
+        an :class:`~euclid.exceptions.EuclidServiceError`, and it is the one that matters. An
+        expired session, an unreachable gateway or a refused permission is not the same as "not
+        there", and returning ``False`` for them would have callers deleting and recreating things
+        over an outage. Only HTTP 404 - the answer that actually says it is absent - becomes
+        ``False``; everything else is raised.
+
+        :param name: name of the topic, resolved in the session's account and namespace.
+        :raises EuclidServiceError: if the question could not be answered.
+        """
+        try:
+            self.get_topic_ern(name)
+        except EuclidServiceError as error:
+            if error.status == 404:
+                return False
+            raise
+        return True
 
     def get_topic_metadata(self, ern: str) -> TopicMetadata:
         """Where a topic lives, how much has been published to it, and whether it is delivering.

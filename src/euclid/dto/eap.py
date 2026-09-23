@@ -65,7 +65,8 @@ class Application:
     #: and never touched afterwards - deriving it from the account, namespace and ID instead would
     #: make it change whenever those did, and moving an application would orphan its processes.
     runtime_name: str = ""
-    #: ``JAVA``, ``PYTHON``, ``NODEJS`` or ``BINARY`` - see :mod:`euclid.modules.eap`.
+    #: ``JAVA``, ``JAVA21``, ``JAVA25``, ``PYTHON``, ``NODEJS`` or ``BINARY`` - see
+    #: :mod:`euclid.modules.eap`.
     runtime: str = ""
     #: The bucket the artifact was deployed from, as an ERN. Deployed by name.
     bucket_ern: str = ""
