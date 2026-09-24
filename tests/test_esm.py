@@ -660,3 +660,38 @@ def test_metrics_come_back_unparsed(gateway, esm):
     gateway.answer("esm", "get-metrics", {"items": [{"name": "esm-objects", "value": 3}]})
 
     assert esm.metrics() == {"items": [{"name": "esm-objects", "value": 3}]}
+
+def test_set_bucket_priority_sends_it(gateway, esm):
+    gateway.answer("esm", "set-bucket-priority", {"ern": BUCKET, "name": "inbox", "priority": "HIGH"})
+
+    result = esm.set_bucket_priority(BUCKET, "HIGH")
+
+    assert result.priority == "HIGH"
+    assert gateway.last().json() == {"ern": BUCKET, "priority": "HIGH"}
+
+
+def test_clearing_a_bucket_priority_still_sends_the_field(gateway, esm):
+    # Empty is an instruction here, not an omission: it is the only way back to letting the target
+    # queue's own default decide. Leaving the field out would ask the server to change nothing.
+    gateway.answer("esm", "set-bucket-priority", {"ern": BUCKET, "name": "inbox", "priority": ""})
+
+    esm.set_bucket_priority(BUCKET)
+
+    assert gateway.last().json() == {"ern": BUCKET, "priority": ""}
+
+
+def test_create_bucket_only_carries_a_priority_when_there_is_one(gateway, esm):
+    gateway.answer("esm", "create-bucket", {"name": "inbox", "ern": BUCKET})
+
+    esm.create_bucket("inbox")
+    # Absent rather than empty, so an older installation is not handed a field it has no meaning for.
+    assert "priority" not in gateway.last().json()
+
+    esm.create_bucket("inbox", priority="HIGH")
+    assert gateway.last().json()["priority"] == "HIGH"
+
+
+def test_a_bucket_reports_the_priority_its_notifications_carry(gateway, esm):
+    gateway.answer("esm", "get-bucket", {"bucket": {"name": "inbox", "ern": BUCKET, "priority": "HIGH"}})
+
+    assert esm.get_bucket(BUCKET).priority == "HIGH"

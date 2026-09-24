@@ -27,7 +27,7 @@ __all__ = [
     "ListBucketsResult",
     "ListObjectsResult",
     "RenameBucketResult",
-    "SetBucketInternalResult",
+    "SetBucketInternalResult", "SetBucketPriorityResult",
     "PurgeBucketResult",
     "DeleteObjectsResult",
     "AbortUploadResult",
@@ -60,6 +60,10 @@ class Bucket:
     encryption_key_ern: str = ""
     #: One of euclid's own buckets rather than somebody's. Left out of a listing unless asked for.
     internal: bool = False
+    #: Priority the notifications this bucket sends are given, empty when it sets none. Nothing about
+    #: the bucket depends on it - see
+    #: :meth:`euclid.modules.esm.EuclidEsm.set_bucket_priority`.
+    priority: str = ""
     created: str = ""
     modified: str = ""
 
@@ -70,6 +74,7 @@ class Bucket:
             _json.number(document, "size"), _json.number(document, "objects"),
             _json.string_map(document, "tags"), _json.flag(document, "encrypted"),
             _json.text(document, "encryptionKeyErn"), _json.flag(document, "internal"),
+            _json.text(document, "priority"),
             _json.text(document, "created"), _json.text(document, "modified"))
 
 
@@ -230,6 +235,21 @@ class SetBucketInternalResult:
     def from_json(document: Any) -> "SetBucketInternalResult":
         return SetBucketInternalResult(_json.text(document, "ern"), _json.text(document, "name"),
                                        _json.flag(document, "internal"))
+
+
+@dataclass
+class SetBucketPriorityResult:
+    """A bucket and the priority its notifications now carry."""
+
+    ern: str = ""
+    name: str = ""
+    #: As stored - upper case, or empty when it was cleared.
+    priority: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "SetBucketPriorityResult":
+        return SetBucketPriorityResult(_json.text(document, "ern"), _json.text(document, "name"),
+                                       _json.text(document, "priority"))
 
 
 @dataclass
