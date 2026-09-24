@@ -60,7 +60,12 @@ class CachedCredentials:
             access_key_id=document.get("accessKeyId") or "",
             secret_access_key=document.get("secretAccessKey") or "",
             is_admin=bool(document.get("isAdmin", False)),
-            base_url=document.get("baseUrl") or "",
+            # "endpoint" is the same field under the name euclid's manager writes it as. A
+            # managed application is handed its credentials through EUCLID_CREDENTIALS_FILE - see
+            # :func:`path` - and the file the manager writes there calls the server "endpoint",
+            # where a file this SDK wrote calls it "baseUrl". Reading only one of the two left an
+            # application with a valid token and no idea where to send it.
+            base_url=document.get("baseUrl") or document.get("endpoint") or "",
             namespace=document.get("namespace") or "",
             raw=document,
         )

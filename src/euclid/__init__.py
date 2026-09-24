@@ -50,7 +50,7 @@ from .modules.esm import EuclidEsm, parse_bucket_event
 from .modules.ess import EuclidEss
 from .modules.ets import EuclidEts
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 __all__ = [
     "Euclid",

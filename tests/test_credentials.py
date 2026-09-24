@@ -87,3 +87,34 @@ def test_the_path_can_be_overridden_by_the_environment(isolated_credentials, mon
     elsewhere = tmp_path / "other"
     monkeypatch.setenv("EUCLID_CREDENTIALS_FILE", str(elsewhere))
     assert credentials.credentials_path() == elsewhere
+
+def test_reads_the_server_from_a_managed_applications_credentials(isolated_credentials):
+    # The file a euclid-managed application is handed, which the manager writes: the server is
+    # called "endpoint" there and "baseUrl" in a file this SDK wrote. Reading only "baseUrl" left an
+    # application with a valid token and nowhere to send it - the one field it cannot do without.
+    isolated_credentials.write_text(json.dumps({
+        "token": "eyJ0eXAi.payload.signature",
+        "expiresAt": "2026-09-24T15:07:36.000Z",
+        "userId": "app-echo-worker",
+        "accountId": "000000000000",
+        "region": "eu-central-1",
+        "namespace": "development",
+        "endpoint": "https://localhost:5566"}))
+
+    loaded = credentials.load()
+    assert loaded is not None
+    assert loaded.base_url == "https://localhost:5566"
+    assert loaded.user_id == "app-echo-worker"
+    assert loaded.namespace == "development"
+    # No access key at all: a technical principal's secret never leaves EAM, so the token is the
+    # whole of what the process holds.
+    assert loaded.access_key_id == ""
+
+
+def test_base_url_wins_when_the_file_carries_both(isolated_credentials):
+    isolated_credentials.write_text(json.dumps({
+        "token": "t", "baseUrl": "https://euclid.example.com", "endpoint": "https://localhost:5566"}))
+
+    loaded = credentials.load()
+    assert loaded is not None
+    assert loaded.base_url == "https://euclid.example.com"
