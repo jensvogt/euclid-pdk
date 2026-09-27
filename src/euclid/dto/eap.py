@@ -146,6 +146,38 @@ class RestartResult:
 
 
 @dataclass
+class InfrastructureResult:
+    """What applying an application's infrastructure declaration came to.
+
+    ``declared`` false means the application has no declaration stored - not that applying one
+    failed. Nothing was created, deleted or granted, and the four lists are empty; an application
+    that provisions its resources by hand reads this way every time and is not in error.
+
+    ``deleted`` is the half worth reading before trusting a declaration: a reconcile is full, so a
+    resource this application created and the declaration no longer names is removed, taking a
+    queue's messages or a bucket's objects with it. It is named here rather than counted so that a
+    removal nobody intended is visible in the answer.
+
+    ``granted`` and ``revoked`` name roles rather than permissions, and a re-apply that changes
+    nothing still reports every ``access-`` role in both: they are replaced wholesale rather than
+    diffed, so the same role appears as revoked and granted again.
+    """
+
+    application_id: str = ""
+    declared: bool = False
+    created: list[str] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    granted: list[str] = field(default_factory=list)
+    revoked: list[str] = field(default_factory=list)
+
+    @staticmethod
+    def from_json(document: Any) -> "InfrastructureResult":
+        return InfrastructureResult(_json.text(document, "applicationId"), _json.flag(document, "declared"),
+                                    _json.strings(document, "created"), _json.strings(document, "deleted"),
+                                    _json.strings(document, "granted"), _json.strings(document, "revoked"))
+
+
+@dataclass
 class LogLevelResult:
     """What an application logs at now, and the channel it logs on.
 

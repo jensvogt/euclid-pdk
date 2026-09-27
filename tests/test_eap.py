@@ -235,6 +235,40 @@ def test_restarting_cycles_the_pool_without_changing_the_desired_state(gateway, 
     assert restarted.instances == 3
 
 
+def test_applying_a_declaration_names_what_it_created_and_what_it_removed(gateway, eap):
+    gateway.answer("eap", "apply-infrastructure", {
+        "applicationId": "order-service", "declared": True,
+        "created": ["ern:eqs:eu-central-1:000000000000:development:queue:orders"],
+        "deleted": ["ern:eqs:eu-central-1:000000000000:development:queue:retired"],
+        "granted": ["access-queue-consume"], "revoked": ["access-queue-produce"]})
+
+    applied = eap.apply_infrastructure("order-service")
+
+    assert gateway.last().json() == {"applicationId": "order-service"}
+    assert applied.declared
+    assert applied.created == ["ern:eqs:eu-central-1:000000000000:development:queue:orders"]
+    # The half worth reading before trusting a declaration: a reconcile is full, so a resource this
+    # application created and the file no longer names is gone, and took its messages with it. Named
+    # rather than counted, so a removal nobody intended is visible in the answer.
+    assert applied.deleted == ["ern:eqs:eu-central-1:000000000000:development:queue:retired"]
+    assert applied.granted == ["access-queue-consume"]
+    assert applied.revoked == ["access-queue-produce"]
+
+
+def test_an_application_with_no_declaration_is_answered_rather_than_refused(gateway, eap):
+    """Not an error: an application that provisions its resources by hand reads this way every time,
+    and the four lists come back empty rather than absent."""
+    gateway.answer("eap", "apply-infrastructure", {"applicationId": "order-service", "declared": False})
+
+    applied = eap.apply_infrastructure("order-service")
+
+    assert not applied.declared
+    assert applied.created == []
+    assert applied.deleted == []
+    assert applied.granted == []
+    assert applied.revoked == []
+
+
 def test_an_application_reports_the_instances_answering_for_it(gateway, eap):
     gateway.answer("eap", "get-application", APPLICATION)
 

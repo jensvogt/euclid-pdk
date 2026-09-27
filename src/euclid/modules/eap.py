@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..dto.eap import Application, LogLevelResult, RestartResult
+from ..dto.eap import Application, InfrastructureResult, LogLevelResult, RestartResult
 from .base import ModuleClient
 
 __all__ = ["EuclidEap", "TARGET", "JAVA", "JAVA21", "JAVA25", "PYTHON", "NODEJS", "BINARY",
@@ -296,6 +296,30 @@ class EuclidEap(ModuleClient):
         refused with HTTP 400 rather than started.
         """
         return RestartResult.from_json(self._call("restart-application", {"applicationId": application_id}))
+
+    # -- infrastructure ----------------------------------------------------------------------
+
+    def apply_infrastructure(self, application_id: str) -> InfrastructureResult:
+        """Makes the installation match the application's own infrastructure declaration.
+
+        The declaration is a file the application has already stored beside its artifact -
+        ``<application_id>.euclid.json`` in the bucket it deploys from - naming the queues, topics
+        and buckets it owns and the ones belonging to others that it reaches. This applies it:
+        creates what is missing, grants the access it asks for, and **deletes what this application
+        created and the declaration no longer names**, with everything that resource held.
+
+        Applying is idempotent and changes nothing about the running instances - the modification
+        date is deliberately not stamped, so the manager does not read it as a new revision and
+        cycle the pool. It happens on its own whenever the application is created, updated or
+        redeployed; this is for reconciling without a deploy.
+
+        An application with no declaration stored is answered rather than refused, with
+        :attr:`InfrastructureResult.declared` false. A declaration that cannot be applied is an
+        error: one that names a resource belonging to another application, or claims one it does not
+        own, raises rather than being partly applied.
+        """
+        return InfrastructureResult.from_json(
+            self._call("apply-infrastructure", {"applicationId": application_id}))
 
     def list_applications(self, prefix: str = "") -> list[Application]:
         """The applications whose ID starts with a prefix; an empty prefix lists them all."""
