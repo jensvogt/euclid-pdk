@@ -337,6 +337,23 @@ def test_message_metadata_and_visibility(gateway, eqs):
     assert gateway.last().json() == {"messageId": "message-1", "visibility": 120}
 
 
+def test_update_message_body_reports_the_size_it_displaced(gateway, eqs):
+    """``previous_size`` is the one thing a caller cannot go back and check: the body it replaced is
+    gone by the time the answer arrives."""
+    gateway.answer("eqs", "update-message-body", {"messageId": "message-1",
+                                                  "queueErn": "ern:eqs:queue:orders",
+                                                  "size": 25, "previousSize": 10,
+                                                  "contentType": "text/plain"})
+
+    updated = eqs.update_message_body("message-1", "0123456789012345678901234")
+
+    assert gateway.last().action == "update-message-body"
+    assert gateway.last().json() == {"messageId": "message-1", "body": "0123456789012345678901234"}
+    assert updated.queue_ern == "ern:eqs:queue:orders"
+    assert (updated.size, updated.previous_size) == (25, 10)
+    assert updated.content_type == "text/plain"
+
+
 def test_message_attributes_are_typed_and_use_the_servers_own_field_names(gateway, eqs):
     """``name`` on the way in, ``key`` on the way out: the server's asymmetry, reproduced rather
     than papered over."""

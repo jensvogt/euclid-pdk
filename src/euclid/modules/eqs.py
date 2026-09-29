@@ -25,7 +25,7 @@ from typing import Any, Mapping, Sequence
 from ..dto.com import Variant
 from ..dto.eqs import (Queue, CreateQueueResult, ListQueuesResult, Message, MessageAttribute, MessageCount,
                        MessageMetadata, MessagesResult, QueueMaxMessageLengthResult, QueueMetadata,
-                       QueueStatusResult, RedriveDlqResult, SendBatchResult)
+                       QueueStatusResult, RedriveDlqResult, SendBatchResult, UpdateMessageBodyResult)
 from ..exceptions import EuclidServiceError
 from .base import ModuleClient
 
@@ -469,6 +469,20 @@ class EuclidEqs(ModuleClient):
         if not 0 <= visibility <= MAX_VISIBILITY:
             raise ValueError(f"visibility must be between 0 and {MAX_VISIBILITY} seconds")
         self._call("set-message-visibility", {"messageId": message_id, "visibility": visibility})
+
+    def update_message_body(self, message_id: str, body: str) -> UpdateMessageBodyResult:
+        """Replaces the body of a message already on a queue.
+
+        The whole body, not part of it - a message body is opaque to euclid, so there is nothing
+        that could merge two of them. The message keeps its ID, status, priority, visibility and
+        attributes; the body, its size and its content type are what change.
+
+        The queue's maximum message length applies exactly as it does to :meth:`send_message`, so a
+        body that could not have been sent cannot be reached by sending something short and then
+        growing it.
+        """
+        return UpdateMessageBodyResult.from_json(self._call("update-message-body", {
+            "messageId": message_id, "body": body}))
 
     def get_message_attribute(self, message_id: str, name: str) -> MessageAttribute:
         """One attribute of one message."""
