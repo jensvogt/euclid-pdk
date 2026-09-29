@@ -26,6 +26,7 @@ __all__ = [
     "MessageCount",
     "SubscribeResult",
     "TopicStateResult",
+    "UpdateMessageBodyResult",
     "TopicRetentionResult",
     "TopicMaxMessageLengthResult",
 ]
@@ -218,6 +219,28 @@ class MessageCount:
         return MessageCount(
             _json.text(document, "ern"), _json.number(document, "available"),
             _json.number(document, "send"), _json.number(document, "resend"))
+
+
+@dataclass
+class UpdateMessageBodyResult:
+    """What a message looks like after its body was replaced.
+
+    ``previous_size`` is the one thing a caller cannot go back and check: the body it replaced is
+    gone by the time the answer arrives.
+    """
+
+    message_id: str = ""
+    topic_ern: str = ""
+    size: int = 0
+    previous_size: int = 0
+    content_type: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "UpdateMessageBodyResult":
+        return UpdateMessageBodyResult(
+            _json.text(document, "messageId"), _json.text(document, "topicErn"),
+            _json.number(document, "size"), _json.number(document, "previousSize"),
+            _json.text(document, "contentType"))
 
 
 @dataclass

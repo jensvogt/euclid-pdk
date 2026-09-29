@@ -25,6 +25,7 @@ __all__ = [
     "QueueMetadata",
     "MessageCount",
     "MessageMetadata",
+    "UpdateMessageBodyResult",
     "QueueStatusResult",
     "QueueMaxMessageLengthResult",
     "RedriveTarget",
@@ -303,6 +304,29 @@ class MessageMetadata:
             _json.number(document, "receivedCount"), _json.number(document, "visibilityTimeout"),
             _json.text(document, "contentType"), _json.text(document, "created"),
             _json.text(document, "modified"))
+
+
+@dataclass
+class UpdateMessageBodyResult:
+    """What a message looks like after its body was replaced.
+
+    ``previous_size`` is the one thing a caller cannot go back and check: the body it replaced is
+    gone by the time the answer arrives. Worth having when the point of the rewrite was to make a
+    message smaller, or to confirm that it did not grow past what the queue accepts.
+    """
+
+    message_id: str = ""
+    queue_ern: str = ""
+    size: int = 0
+    previous_size: int = 0
+    content_type: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "UpdateMessageBodyResult":
+        return UpdateMessageBodyResult(
+            _json.text(document, "messageId"), _json.text(document, "queueErn"),
+            _json.number(document, "size"), _json.number(document, "previousSize"),
+            _json.text(document, "contentType"))
 
 
 @dataclass

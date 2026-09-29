@@ -32,7 +32,7 @@ from ..dto.com import Variant
 from ..dto.ens import (Message, Topic, CreateTopicResult, ListTopicsResult, MessageAttribute, MessageCount,
                        MessagesResult, ResendResult, SubscribeResult, Subscription,
                        TopicMaxMessageLengthResult, TopicMetadata, TopicRetentionResult,
-                       TopicStateResult)
+                       TopicStateResult, UpdateMessageBodyResult)
 from ..exceptions import EuclidServiceError
 from .base import ModuleClient
 
@@ -326,6 +326,23 @@ class EuclidEns(ModuleClient):
     def get_message_count(self, ern: str) -> MessageCount:
         """A topic's message counters: what is on it, what went out, and what had to go out again."""
         return MessageCount.from_json(self._call("get-message-count", {"ern": ern}))
+
+    def update_message_body(self, message_id: str, body: str) -> UpdateMessageBodyResult:
+        """Replaces the body of a message already published to a topic.
+
+        The whole body, not part of it. The message keeps its ID and its attributes; the body, its
+        size and its content type are what change.
+
+        What this reaches is the copy ENS still holds - what :meth:`list_messages` and
+        :meth:`get_message` answer with, and what :meth:`resend_messages` would send. A topic fans a
+        message out to its subscribers when it is published, so the copies that already left are
+        past changing: this corrects the record rather than the delivery, which is the opposite of
+        what one would assume.
+
+        The topic's maximum message length applies exactly as it does to :meth:`publish_message`.
+        """
+        return UpdateMessageBodyResult.from_json(self._call("update-message-body", {
+            "messageId": message_id, "body": body}))
 
     def get_message_attribute(self, message_id: str, key: str) -> MessageAttribute:
         """One attribute of one published message.
