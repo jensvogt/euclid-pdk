@@ -15,7 +15,8 @@ from typing import Any
 
 from . import _json
 
-__all__ = ["Application", "Endpoint", "LogLevelResult"]
+__all__ = ["Application", "Endpoint", "LogLevelResult", "Node", "NodeApplication",
+           "ListNodesResult", "NodeStateResult"]
 
 
 @dataclass
@@ -193,3 +194,120 @@ class LogLevelResult:
     def from_json(document: Any) -> "LogLevelResult":
         return LogLevelResult(_json.text(document, "applicationId"), _json.text(document, "logLevel"),
                               _json.text(document, "channel"))
+
+
+@dataclass
+class NodeApplication:
+    """What one node holds of one application's pool.
+
+    Two counts rather than one, because they come apart and the gap is the thing worth seeing: a
+    node holding four slots and running none is a node whose instances will not start, and a single
+    number cannot say so.
+    """
+
+    application_id: str = ""
+    #: What the processes on this node are actually named after - see :attr:`Application.runtime_name`.
+    runtime_name: str = ""
+    namespace: str = ""
+    runtime: str = ""
+    #: Slots of this application's pool placed on this node.
+    instances: int = 0
+    #: How many of those are serving.
+    running: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "NodeApplication":
+        return NodeApplication(
+            _json.text(document, "applicationId"), _json.text(document, "runtimeName"),
+            _json.text(document, "namespace"), _json.text(document, "runtime"),
+            _json.number(document, "instances"), _json.number(document, "running"))
+
+
+@dataclass
+class Node:
+    """A host that has registered itself as somewhere euclid may place application instances.
+
+    A node is not configured; it registers, renews, and is forgotten when it stops renewing. So
+    ``live`` is the field that matters: it says the node's lease has not expired, which is as close
+    to "is it there" as anything here gets. A node row that is not live is the record of a host that
+    has gone away rather than an error.
+
+    ``drained`` is the deliberate half of the same question - see
+    :meth:`~euclid.modules.eap.EuclidEap.drain_node`. A drained node is still live and still running
+    what it has; it simply takes nothing new.
+
+    ``applications`` is only ever filled in by :meth:`~euclid.modules.eap.EuclidEap.get_node`. A
+    listing leaves it empty, because what a node is running is a question asked one node at a time
+    and answering it for every node would cost a pass over every pool.
+    """
+
+    name: str = ""
+    address: str = ""
+    #: The principal that registered this name, which is what stops another re-registering under it
+    #: and being handed this node's assignments and credentials.
+    principal: str = ""
+    labels: dict[str, str] = field(default_factory=dict)
+    cpu_count: int = 0
+    version: str = ""
+    os: str = ""
+    arch: str = ""
+    #: Taking nothing new, by request rather than by failure.
+    drained: bool = False
+    #: Whether the registration lease is still current.
+    live: bool = False
+    last_seen: str = ""
+    #: What this node holds of each application - :meth:`get_node` only.
+    applications: list[NodeApplication] = field(default_factory=list)
+
+    @staticmethod
+    def from_json(document: Any) -> "Node":
+        return Node(
+            _json.text(document, "name"), _json.text(document, "address"),
+            _json.text(document, "principal"), _json.string_map(document, "labels"),
+            _json.number(document, "cpuCount"), _json.text(document, "version"),
+            _json.text(document, "os"), _json.text(document, "arch"),
+            _json.flag(document, "drained"), _json.flag(document, "live"),
+            _json.text(document, "lastSeen"),
+            [NodeApplication.from_json(a) for a in _json.documents(document, "applications")])
+
+    @property
+    def is_available(self) -> bool:
+        """Whether this node would be placed on: its lease is current and it is not draining."""
+        return self.live and not self.drained
+
+
+@dataclass
+class ListNodesResult:
+    """Every node registered in the account, and how many that was.
+
+    Not paged, unlike the other listings in this SDK - the server answers with all of them, because
+    the number of hosts an installation runs on is small and a node nobody can see is a node nobody
+    places on deliberately.
+    """
+
+    nodes: list[Node] = field(default_factory=list)
+    total: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "ListNodesResult":
+        return ListNodesResult([Node.from_json(n) for n in _json.documents(document, "nodes")],
+                               _json.number(document, "total"))
+
+
+@dataclass
+class NodeStateResult:
+    """What a node is called and what was just done to it.
+
+    One shape for draining and for deleting: ``drained`` is what a drain answers with, ``deleted``
+    what a removal does, and each reads false in the other's answer because that is the field the
+    server did not send.
+    """
+
+    node: str = ""
+    drained: bool = False
+    deleted: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "NodeStateResult":
+        return NodeStateResult(_json.text(document, "node"), _json.flag(document, "drained"),
+                               _json.flag(document, "deleted"))

@@ -3,11 +3,13 @@
 Python client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
 It covers the three things everything else needs - the connection, request signing, and EAM,
-euclid's access management module - and the eleven modules an application spends its time in: ESM
+euclid's access management module - and the twelve modules an application spends its time in: ESM
 (storage), EQS (queues), ENS (topics), EES (events), EKM (keys), ESS (secrets), EKV (key-value
-tables), EAG (the API gateway), EAP (the applications behind it), ETS (FTP and SFTP onto a bucket)
-and EMO (monitoring). The remaining modules (EMM, EMD and the rest) speak the same protocol over the
-same client and will follow.
+tables), EAG (the API gateway), EAP (the applications behind it), ETS (FTP and SFTP onto a bucket),
+EMO (monitoring) and EAD (the audit trail). Every command `euclid-cli` has is wrapped here. EMM and
+EMD are deliberately not: no role can name their actions - EMM reaches every module's live process
+pool, EMD is the document store itself - so both are reached by an installation administrator
+rather than by an application.
 
 Requires Python 3.10 or newer, and **has no dependencies**. Installing this SDK does not bring a
 TLS stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and
@@ -195,7 +197,7 @@ credentials file; the retry then has a fresh token to use.
 
 | Method | Action |
 | --- | --- |
-| `list_users`, `get_user`, `register`, `delete_user` | users |
+| `list_users`, `get_user`, `register`, `delete_user`, `change_userid` | users |
 | `change_password`, `reset_password` | your own password, given the current one; or somebody else's, as an administrator |
 | `create_access_key`, `list_access_keys`, `delete_access_key` | the caller's own signing credentials |
 | `create_user_group`, `list_user_groups`, `get_user_group`, `delete_user_group`, `add_user_to_user_group`, `remove_user_from_user_group` | groups |
@@ -279,6 +281,7 @@ connection.
 | `set_bucket_internal` | whether a bucket is euclid's own plumbing, and so left out of listings |
 | `enable_encryption`, `disable_encryption` | encryption at rest, under an EKM key |
 | `put_object`, `get_object`, `upload_file`, `download_file`, `abort_upload` | an object's bytes |
+| `upload_directory`, `download_bucket` | a local directory tree, one object per file |
 | `list_objects`, `copy_object`, `move_object`, `rename_object` | objects |
 | `count_objects`, `get_object_count` | how many there are: counted exactly, or the bucket's stored running total |
 | `delete_object`, `delete_objects`, `purge_bucket` | deleting them |
@@ -293,6 +296,15 @@ part at a time rather than into memory; `download_file` tries a single request f
 to fetching parts when the server says the object is too large for one. Both retry a part that
 failed transiently - a 5xx, or a request that got no answer - four times before giving up, because
 a transfer is long and made of many steps and failing one of them throws away all the others.
+
+`upload_directory` and `download_bucket` are the same two a file at a time, and are entirely
+client-side: a bucket has no directories, only keys that share a prefix. Each object's key is the
+prefix plus the file's path relative to the directory, with forward slashes whatever the platform
+uses - a backslash in a key would be a character in the name rather than a level of nesting. Without
+`recursive` only the files directly inside are uploaded, and only an object's direct descendants
+downloaded; with it, the tree is walked either way, so the two are each other's inverse. A key
+containing `..` is skipped on download rather than written, because the keys come from the server and
+a download should not be able to write anywhere the caller did not name.
 
 Attributes belong on the write rather than on a call after it. Completing an upload is finished off
 in the background on the server, and the object row it writes at the end carries what the upload
@@ -647,6 +659,9 @@ through.
 | `create_application`, `update_application`, `redeploy_application`, `delete_application` | deploying |
 | `start_application`, `stop_application` | running |
 | `list_applications`, `get_application` | what is deployed, and what is answering |
+| `copy_application`, `scale_application`, `restart_application` | moving, sizing and cycling one |
+| `apply_infrastructure` | the resources an application declares it needs |
+| `list_nodes`, `get_node`, `drain_node`, `delete_node` | the hosts instances are placed on |
 | `set_log_level`, `reset_log_level` | what one application logs at |
 | `metrics` | EAP's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
@@ -689,6 +704,44 @@ A few things this SDK reproduces rather than smooths over:
 defaults to the one already deployed and the version to whatever the artifact's name says. A
 redeploy that would change neither the version nor the checksum is refused with HTTP 409 — it would
 restart the instances for nothing, and usually means the new artifact never reached the bucket.
+
+### Nodes
+
+A node is a host that has registered itself as somewhere euclid may place instances. Nothing
+configures one: it registers, renews, and is forgotten when it stops renewing — so `live`, which
+says the lease is still current, is as close to "is it there" as anything here gets, and a node row
+that is not live is the record of a host that has gone away rather than an error.
+
+```python
+for node in eap.list_nodes().nodes:
+    print(node.name, node.cpu_count, node.live, node.drained, node.is_available)
+
+node = eap.get_node("box-1")          # the only call that fills in node.applications
+```
+
+`get_node` is the only one that says what a node is running, because that is not on the node's own
+record — it is read back out of every pool's instance list, a pass worth making for one host and not
+for all of them. Each entry carries both `instances` and `running`: a node holding four slots and
+serving none is a node whose instances will not start, and one number cannot say so.
+
+**Draining and deleting are different things, and the order matters.** `drain_node` stops new
+instances being placed while leaving the ones it has alone — the node keeps running and keeps
+renewing, and its instances leave as they are replaced. A node that downed tools on being drained
+would make draining an outage. `delete_node` only removes the *registration*: a worker still running
+finds itself unregistered at its next renewal and registers again. So taking a host out for good is
+`drain_node`, then stopping the worker, then `delete_node`:
+
+```python
+eap.drain_node("box-1")                  # takes nothing new; keeps what it has
+...                                      # stop the worker process on the host
+eap.delete_node("box-1")                 # frees the name, administrators only
+eap.drain_node("box-1", drained=False)   # or put it back into service instead
+```
+
+`delete_node` is administrator-only where the other node calls are not, for a specific reason: a
+worker able to delete another's registration could re-register under its name and be handed its
+assignments and its credentials. Binding the name to the principal that claimed it closes that, and
+only an administrator may break the binding.
 
 ## What EAG covers
 
@@ -915,6 +968,47 @@ monitoring system that lies about throughput is worse than one with a gap in it.
 at the application — a process does not stop because it could not say how it was doing — so
 `publishes` and `failed_publishes` are the only answer to "is the monitoring working", since a metric
 about pushing metrics cannot be pushed.
+
+## What EAD covers
+
+`session.ead()` returns the audit client.
+
+| Method | Action |
+| --- | --- |
+| `list_events` | one page of the trail, newest first |
+| `count_events` | how many match, exactly |
+| `purge_events` | pruning it by age |
+| `metrics` | EAD's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+Nothing writes through this client. euclid's own modules record what they were asked to do as they
+do it, and EAD is the way back to those records — so the three actions read, count and prune, and
+there is no way to add an entry.
+
+```python
+for event in ead.list_events(module="esm", command="delete-bucket", page_size=50).events:
+    print(event.created, event.user_id, event.parameters, event.status)
+```
+
+Every filter is optional and they combine; `status` is on each entry because an audit that kept only
+the successes would be the wrong half — a refused delete is more interesting than a granted one.
+
+**A read is confined to the caller's own account**, always, whatever the request says. An audit one
+account could read of another would hand over the shape of somebody else's installation — which
+buckets they keep, who works there, what they do — through the one module built to be read by people
+looking for exactly that.
+
+**`total` on a listing is capped, not exact.** An exact total means reading an index entry per
+matching event, and on a trail of tens of millions that is seconds of database time spent beside a
+page of fifty — paid again on every page somebody turns. So the server stops counting at
+`LIST_TOTAL_LIMIT`, and `total_exact` is what makes the capped answer honest rather than wrong:
+false means "at least this many", which is all a pager needs in order to know there is a next page.
+`count_events` is the real number, for when it is the answer rather than a scrollbar.
+
+`purge_events(older_than_days)` needs a window and refuses a non-positive one here before the round
+trip, because a purge with no window would remove the whole trail. Unlike the reads it is *not*
+confined to one account — the server prunes by age across the installation — and the purge is itself
+recorded, its entry landing in the trail it just pruned.
 
 ## Writing a module of your own
 

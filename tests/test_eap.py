@@ -385,3 +385,108 @@ def test_the_runtime_constants_are_the_strings_eap_accepts():
     # Three distinct runtimes, not one with aliases: a jar built for 25 does not start on 21, so
     # asking for one and getting the other is the failure these exist to prevent.
     assert len({JAVA, JAVA21, JAVA25}) == 3
+
+
+# -- nodes ----------------------------------------------------------------------------------
+#
+# A node is not configured; it registers itself, renews, and is forgotten when it stops renewing.
+# So what these check is mostly that the two ways of being unavailable stay apart: "live" is
+# whether the lease is current, "drained" is whether somebody asked it to take nothing new.
+
+
+NODE = {"name": "box-1", "address": "10.0.0.7:9100", "principal": "ern:eam:user/worker-1",
+        "labels": {"zone": "a", "class": "compute"}, "cpuCount": 16, "version": "1.0.73",
+        "os": "linux", "arch": "x86_64", "drained": False, "live": True,
+        "lastSeen": "2026-10-13T09:15:00Z"}
+
+
+def test_listing_nodes_leaves_out_what_each_is_running(gateway, eap):
+    """That is get_node's question: what a node holds is read back out of every pool's instance
+    list, which is a pass worth making for one host and not for all of them."""
+    gateway.answer("eap", "list-nodes", {"nodes": [NODE, {"name": "box-2"}], "total": 2})
+
+    result = eap.list_nodes()
+
+    assert gateway.last().json() == {}
+    assert result.total == 2
+    assert [node.name for node in result.nodes] == ["box-1", "box-2"]
+    assert result.nodes[0].labels == {"zone": "a", "class": "compute"}
+    assert result.nodes[0].cpu_count == 16
+    assert result.nodes[0].applications == []
+    # A field the server did not send reads as empty rather than raising.
+    assert (result.nodes[1].address, result.nodes[1].live) == ("", False)
+
+
+def test_a_node_says_what_it_holds_and_what_is_serving(gateway, eap):
+    """Both counts, because the gap is the thing worth seeing: four slots and nothing running is a
+    node whose instances will not start, and one number cannot say so."""
+    gateway.answer("eap", "get-node", dict(NODE, applications=[
+        {"applicationId": "order-service", "runtimeName": "order-service-7f3a",
+         "namespace": "development", "runtime": "JAVA21", "instances": 4, "running": 0},
+    ]))
+
+    node = eap.get_node("box-1")
+
+    assert gateway.last().json() == {"node": "box-1"}
+    assert len(node.applications) == 1
+    held = node.applications[0]
+    assert (held.application_id, held.instances, held.running) == ("order-service", 4, 0)
+    assert held.runtime_name == "order-service-7f3a"
+
+
+def test_live_and_drained_are_different_questions(gateway, eap):
+    """A drained node is still there and still running what it has; it simply takes nothing new."""
+    gateway.answer("eap", "get-node", dict(NODE, live=True, drained=True))
+
+    assert eap.get_node("box-1").is_available is False
+
+    # And a node that stopped renewing is unavailable without anybody having asked for it.
+    gateway.answer("eap", "get-node", dict(NODE, live=False, drained=False))
+    node = eap.get_node("box-1")
+    assert (node.live, node.drained, node.is_available) == (False, False, False)
+
+
+def test_draining_a_node_and_putting_it_back(gateway, eap):
+    gateway.answer("eap", "drain-node", {"node": "box-1", "drained": True})
+
+    assert eap.drain_node("box-1").drained is True
+    assert gateway.last().json() == {"node": "box-1", "drained": True}
+
+    # Sent rather than left out, because false is the instruction to take it back into service.
+    gateway.answer("eap", "drain-node", {"node": "box-1", "drained": False})
+    assert eap.drain_node("box-1", drained=False).drained is False
+    assert gateway.last().json() == {"node": "box-1", "drained": False}
+
+
+def test_deleting_a_node_frees_the_name_without_stopping_anything(gateway, eap):
+    """A worker still running finds itself unregistered at its next renewal and registers again -
+    which is why drain_node, not this, is how a host is taken out of service."""
+    gateway.answer("eap", "delete-node", {"node": "box-1", "deleted": True})
+
+    result = eap.delete_node("box-1")
+
+    assert gateway.last().json() == {"node": "box-1"}
+    assert (result.node, result.deleted) == ("box-1", True)
+    # One shape for both node answers, so the field the server did not send reads false.
+    assert result.drained is False
+
+
+def test_deleting_a_node_is_administrator_only(gateway, eap):
+    """Unlike the other node actions. A worker able to delete another's registration could
+    re-register under its name and be handed its assignments and credentials."""
+    gateway.answer("eap", "delete-node", {"error": "Administrator privileges required"}, status=403)
+
+    with pytest.raises(EuclidServiceError) as raised:
+        eap.delete_node("box-1")
+
+    assert raised.value.status == 403
+
+
+def test_a_node_that_was_never_registered(gateway, eap):
+    gateway.answer("eap", "get-node", {"error": "Node is not registered, node: box-9"}, status=404)
+
+    with pytest.raises(EuclidServiceError) as raised:
+        eap.get_node("box-9")
+
+    assert raised.value.status == 404
+    assert "not registered" in raised.value.reason

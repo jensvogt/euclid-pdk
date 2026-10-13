@@ -8,11 +8,11 @@ Start here::
     for user in session.list_users().users:
         print(user.user_id, user.email)
 
-This release covers the connection, both signing schemes, EAM, and the eleven modules an
+This release covers the connection, both signing schemes, EAM, and the twelve modules an
 application spends its time in - ESM (storage), EQS (queues), ENS (topics), EES (events), EKM
 (keys), ESS (secrets), EKV (key-value tables), EAG (the API gateway), EAP (the applications behind
-it), ETS (FTP and SFTP onto a bucket) and EMO (monitoring), each reached from the session the login
-returns::
+it), ETS (FTP and SFTP onto a bucket), EMO (monitoring) and EAD (the audit trail), each reached from
+the session the login returns::
 
     session = Euclid.for_server(url).login("jens", "secret")
 
@@ -27,10 +27,12 @@ returns::
     session.eag().create_route("orders", "/api/orders", "order-service")
     session.ets().start_server("partner-drop")
     session.emo().push_metrics("order-service", [Metric.rate("orders.placed", 17)])
+    session.ead().list_events(module="esm", command="delete-bucket")
 
-The remaining modules - EMM, EMD and the rest - speak the same protocol through the same client
-and are not wrapped yet; each client's ``call(action, payload)`` reaches an action this SDK does not
-name, and :class:`euclid.modules.ModuleClient` is what a module of one's own is built on.
+Every command ``euclid-cli`` has is wrapped here. EMM and EMD are deliberately not - no role can
+name their actions, so both are an installation administrator's rather than an application's.
+Each client's ``call(action, payload)`` reaches an action this SDK does not name, and
+:class:`euclid.modules.ModuleClient` is what a module of one's own is built on.
 """
 
 from .auth import SignableRequest, SigningScheme

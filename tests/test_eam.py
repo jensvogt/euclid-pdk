@@ -741,3 +741,33 @@ def test_a_grant_scoped_to_no_namespace_says_so_before_the_round_trip(gateway):
             session.grant_role("operator", "ern:...:user/jens", namespaces=[])
 
     assert [r for r in gateway.requests if r.action == "grant-role"] == []
+
+
+def test_renaming_a_user_answers_with_the_user(gateway):
+    """An id is not a label: it is what a grant's principal names, what an application's technical
+    identity is, and what the audit trail's userId column holds."""
+    prepared(gateway)
+    gateway.answer("eam", "change-userid", {"user": {
+        "userId": "jens.vogt", "ern": "ern:eam:user/jens.vogt", "email": "jens@example.com",
+        "accountId": "000000000000", "region": "eu-central-1"}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        renamed = session.change_userid("jens", "jens.vogt")
+
+    assert gateway.last().json() == {"userId": "jens", "newUserId": "jens.vogt"}
+    assert renamed.user_id == "jens.vogt"
+    assert renamed.ern == "ern:eam:user/jens.vogt"
+
+
+def test_a_rename_the_server_cannot_carry_through_is_refused_whole(gateway):
+    """Rather than renaming the user and leaving the references behind, which is the outcome worth
+    not having."""
+    prepared(gateway)
+    gateway.answer("eam", "change-userid", {"error": "User already exists, userId: alice"},
+                   status=409)
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        with pytest.raises(EuclidServiceError) as raised:
+            session.change_userid("jens", "alice")
+
+    assert raised.value.status == 409

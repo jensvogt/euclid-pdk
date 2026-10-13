@@ -30,6 +30,7 @@ from ..http.client import DEFAULT_CA_CERT_PATH, DEFAULT_TIMEOUT, EuclidHttpClien
 from ..url import authority_of, host_header_of, scheme_of, strip_trailing_slash
 
 if TYPE_CHECKING:  # pragma: no cover - the runtime imports are inside the methods that need them
+    from .ead import EuclidEad
     from .eag import EuclidEag
     from .eap import EuclidEap
     from .ees import EuclidEes
@@ -417,6 +418,21 @@ class EuclidSession:
             raise ValueError("reset_password() is for another user's password; "
                              "use change_password(old_password, new_password) for your own")
         self._call("change-password", {"userId": user_id, "newPassword": new_password})
+
+    def change_userid(self, user_id: str, new_user_id: str) -> User:
+        """Renames a user, and returns them as they now stand. Administrator only.
+
+        The id is not a label: it is what a grant's principal names, what an application's
+        technical identity is, and what the audit trail's ``userId`` column holds. The server moves
+        what it can follow and refuses the rename outright when something would be left pointing at
+        a user that no longer exists, rather than renaming and leaving the rest behind.
+
+        Raises :class:`EuclidServiceError` if there is no such user (404), if the new id is taken
+        (409), or if the rename cannot be carried through (409). Giving the id the user already has
+        is a 400 rather than a quiet success.
+        """
+        return User.from_json(self._call("change-userid", {
+            "userId": user_id, "newUserId": new_user_id}).get("user", {}))
 
     # -- namespace scoping -------------------------------------------------------------------
 
@@ -871,6 +887,12 @@ class EuclidSession:
         from .emo import EuclidEmo
 
         return self._module("emo", EuclidEmo)
+
+    def ead(self) -> "EuclidEad":
+        """EAD - euclid's audit trail - on this session's credentials."""
+        from .ead import EuclidEad
+
+        return self._module("ead", EuclidEad)
 
     def _module(self, name: str, factory: Callable[["EuclidSession"], Any]) -> Any:
         """The one client this session has for a module, built the first time it is asked for.

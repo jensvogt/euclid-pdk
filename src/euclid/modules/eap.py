@@ -26,7 +26,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..dto.eap import Application, InfrastructureResult, LogLevelResult, RestartResult
+from ..dto.eap import (Application, InfrastructureResult, ListNodesResult, LogLevelResult, Node,
+                       NodeStateResult, RestartResult)
 from .base import ModuleClient
 
 __all__ = ["EuclidEap", "TARGET", "JAVA", "JAVA21", "JAVA25", "PYTHON", "NODEJS", "BINARY",
@@ -329,6 +330,54 @@ class EuclidEap(ModuleClient):
     def get_application(self, application_id: str) -> Application:
         """One application, by its ID, with the instances that are answering for it."""
         return self._application("get-application", {"applicationId": application_id})
+
+    # -- nodes -------------------------------------------------------------------------------
+
+    def list_nodes(self) -> ListNodesResult:
+        """The hosts registered as somewhere euclid may place application instances.
+
+        Not paged and not filtered: a node registers itself and is forgotten when it stops
+        renewing, so the list is as long as the installation is wide, and a host nobody can see is
+        a host nobody places on deliberately.
+
+        ``applications`` is empty on every node here - see :meth:`get_node`.
+        """
+        return ListNodesResult.from_json(self._call("list-nodes", {}))
+
+    def get_node(self, node: str) -> Node:
+        """One node, and what it is running.
+
+        The only call that fills in :attr:`~euclid.dto.eap.Node.applications`, because what a node
+        holds is not on the node's own record - it is read back out of every pool's instance list,
+        which is a pass worth making for one host and not for all of them.
+        """
+        return Node.from_json(self._call("get-node", {"node": node}))
+
+    def drain_node(self, node: str, drained: bool = True) -> NodeStateResult:
+        """Stops new instances being placed on a node, without stopping the ones it has.
+
+        Not a stop, deliberately: the node keeps running what it holds and keeps renewing its
+        registration, and its instances leave as they are replaced. A node that downed tools on
+        being drained would make draining an outage, which is the opposite of what it is for.
+
+        ``drained=False`` puts it back into service. Taking a host out for good is this, then
+        stopping the worker, then :meth:`delete_node` - in that order, since deleting alone does
+        not stop anything.
+        """
+        return NodeStateResult.from_json(self._call("drain-node", {"node": node, "drained": drained}))
+
+    def delete_node(self, node: str) -> NodeStateResult:
+        """Removes a node's registration, freeing the name for another principal.
+
+        Administrator-only, unlike the rest of these, and for a specific reason: a worker able to
+        delete another's registration could re-register under its name and be handed its
+        assignments and its credentials. Binding the name to the principal that claimed it is what
+        closes that, and only an administrator may break the binding.
+
+        **It does not stop the node.** A worker still running finds itself unregistered at its next
+        renewal and simply registers again. :meth:`drain_node` is how one is taken out of service.
+        """
+        return NodeStateResult.from_json(self._call("delete-node", {"node": node}))
 
     # -- logging -----------------------------------------------------------------------------
 

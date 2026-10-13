@@ -601,6 +601,83 @@ class EuclidEsm(ModuleClient):
         self._complete_download(download.download_id)
         return download.size
 
+    def upload_directory(self, bucket_ern: str, directory: str | Path, prefix: str = "",
+                         recursive: bool = False, part_size: int = DEFAULT_PART_SIZE,
+                         concurrency: int = DEFAULT_CONCURRENCY) -> dict[str, StoredObject]:
+        """Uploads every file in a local directory, one object per file.
+
+        Each object's key is ``prefix`` followed by the file's path relative to ``directory``, with
+        forward slashes whatever the platform uses - a key is an opaque string and ``\\`` in one
+        would be a character in the name rather than a level of nesting.
+
+        Without ``recursive`` only the files directly inside the directory go up; with it,
+        subdirectories are walked. Directories themselves are never uploaded - a bucket has no
+        directories, only keys that share a prefix.
+
+        One file at a time, each through :meth:`upload_file`, so ``concurrency`` is the parts of one
+        file rather than files at once. Returns the objects by key, in the order they were sent.
+
+        :raises ValueError: if ``directory`` is not one, which is worth saying before the first
+            upload rather than after a partial one.
+        """
+        root = Path(directory)
+        if not root.is_dir():
+            raise ValueError(f"{root} is not a directory")
+
+        files = sorted(p for p in (root.rglob("*") if recursive else root.iterdir()) if p.is_file())
+        uploaded: dict[str, StoredObject] = {}
+        for path in files:
+            key = prefix + path.relative_to(root).as_posix()
+            uploaded[key] = self.upload_file(bucket_ern, key, path, part_size, concurrency)
+        return uploaded
+
+    def download_bucket(self, bucket_ern: str, directory: str | Path, prefix: str = "",
+                        recursive: bool = False, part_size: int = DEFAULT_PART_SIZE,
+                        concurrency: int = DEFAULT_CONCURRENCY,
+                        page_size: int = 100) -> dict[str, int]:
+        """Downloads a bucket's objects to a local directory, one file per object.
+
+        Each local path is ``directory`` followed by the object's key with ``prefix`` taken off, so
+        a download and an :meth:`upload_directory` of the same prefix are each other's inverse.
+        Missing parent directories are created.
+
+        Without ``recursive`` only an object's direct descendants come down - keys matching
+        ``prefix`` with no further ``/`` after it; with it, every key matching ``prefix`` however
+        deeply nested. The zero-byte directory markers are never fetched.
+
+        The listing is paged through rather than asked for in one go, since a bucket may hold more
+        objects than fit in one answer. Returns the bytes written per key.
+
+        A key that would land outside ``directory`` - one containing ``..`` - is skipped rather
+        than written: the keys come from the server, and a download should not be able to write
+        anywhere the caller did not name.
+        """
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+
+        written: dict[str, int] = {}
+        page_index = 0
+        while True:
+            page = self.list_objects(bucket_ern, prefix=prefix, page_size=page_size,
+                                     page_index=page_index)
+            if not page.objects:
+                break
+            for stored in page.objects:
+                key = stored.key
+                relative = key[len(prefix):]
+                if not relative or key.endswith("/"):
+                    continue
+                if not recursive and "/" in relative:
+                    continue
+                if ".." in Path(relative).parts:
+                    continue
+                written[key] = self.download_file(bucket_ern, key, root / relative,
+                                                  part_size, concurrency)
+            page_index += 1
+            if len(page.objects) < page_size:
+                break
+        return written
+
     # -- monitoring --------------------------------------------------------------------------
 
     def metrics(self) -> dict[str, Any]:

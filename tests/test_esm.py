@@ -695,3 +695,83 @@ def test_a_bucket_reports_the_priority_its_notifications_carry(gateway, esm):
     gateway.answer("esm", "get-bucket", {"bucket": {"name": "inbox", "ern": BUCKET, "priority": "HIGH"}})
 
     assert esm.get_bucket(BUCKET).priority == "HIGH"
+
+
+# -- directories ----------------------------------------------------------------------------------
+#
+# A bucket has no directories, only keys that share a prefix - so these two are entirely
+# client-side, and what they have to get right is the translation between a local path and a key.
+
+
+def test_uploading_a_directory_turns_each_file_into_one_object(gateway, esm, storage, tmp_path):
+    source = tmp_path / "reports"
+    (source / "2026" / "q3").mkdir(parents=True)
+    (source / "top.txt").write_bytes(b"top")
+    (source / "2026" / "q3" / "deep.txt").write_bytes(b"deep")
+
+    # Without recursive, only what is directly inside.
+    shallow = esm.upload_directory(BUCKET, source, prefix="archive/")
+
+    assert sorted(shallow) == ["archive/top.txt"]
+    assert storage.objects[(BUCKET, "archive/top.txt")] == b"top"
+
+    deep = esm.upload_directory(BUCKET, source, prefix="archive/", recursive=True)
+
+    # Forward slashes whatever the platform uses: a backslash in a key would be a character in the
+    # name rather than a level of nesting.
+    assert sorted(deep) == ["archive/2026/q3/deep.txt", "archive/top.txt"]
+    assert storage.objects[(BUCKET, "archive/2026/q3/deep.txt")] == b"deep"
+
+
+def test_uploading_something_that_is_not_a_directory_says_so_first(gateway, esm, storage, tmp_path):
+    """Before the first upload rather than after a partial one."""
+    plain = tmp_path / "q3.pdf"
+    plain.write_bytes(b"a report")
+
+    with pytest.raises(ValueError, match="not a directory"):
+        esm.upload_directory(BUCKET, plain)
+
+    assert [r for r in gateway.requests if r.action in ("put-object", "create-upload")] == []
+
+
+def test_downloading_a_bucket_is_the_inverse_of_uploading_a_directory(gateway, esm, storage, tmp_path):
+    source = tmp_path / "out"
+    (source / "2026").mkdir(parents=True)
+    (source / "top.txt").write_bytes(b"top")
+    (source / "2026" / "deep.txt").write_bytes(b"deep")
+    esm.upload_directory(BUCKET, source, prefix="archive/", recursive=True)
+
+    target = tmp_path / "back"
+    written = esm.download_bucket(BUCKET, target, prefix="archive/", recursive=True)
+
+    assert sorted(written) == ["archive/2026/deep.txt", "archive/top.txt"]
+    assert (target / "top.txt").read_bytes() == b"top"
+    assert (target / "2026" / "deep.txt").read_bytes() == b"deep"
+    assert written["archive/top.txt"] == 3
+
+
+def test_downloading_without_recursive_takes_only_direct_descendants(gateway, esm, storage, tmp_path):
+    """Keys matching the prefix with no further slash after it."""
+    source = tmp_path / "out"
+    (source / "2026").mkdir(parents=True)
+    (source / "top.txt").write_bytes(b"top")
+    (source / "2026" / "deep.txt").write_bytes(b"deep")
+    esm.upload_directory(BUCKET, source, prefix="archive/", recursive=True)
+
+    written = esm.download_bucket(BUCKET, tmp_path / "shallow", prefix="archive/")
+
+    assert sorted(written) == ["archive/top.txt"]
+    assert not (tmp_path / "shallow" / "2026").exists()
+
+
+def test_a_key_that_would_escape_the_target_directory_is_skipped(gateway, esm, storage, tmp_path):
+    """The keys come from the server, so a download must not be able to write anywhere the caller
+    did not name."""
+    gateway.answer("esm", "list-objects", {"total": 1, "objects": [
+        {"ern": f"{BUCKET}/../escaped", "bucketErn": BUCKET, "key": "../escaped", "size": 3,
+         "status": "STORED"}]})
+
+    written = esm.download_bucket(BUCKET, tmp_path / "safe", recursive=True)
+
+    assert written == {}
+    assert not (tmp_path / "escaped").exists()
