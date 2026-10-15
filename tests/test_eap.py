@@ -12,7 +12,8 @@ from __future__ import annotations
 import pytest
 
 from euclid import Euclid, EuclidServiceError
-from euclid.modules.eap import BINARY, DEBUG, JAVA, JAVA21, JAVA25, NODEJS, PYTHON
+from euclid.modules.eap import (BINARY, DEBUG, JAVA, JAVA21, JAVA25, JOB, NODEJS, PROCESS,
+                                PYTHON)
 from test_eam import prepared
 
 APPLICATION = {
@@ -490,3 +491,92 @@ def test_a_node_that_was_never_registered(gateway, eap):
 
     assert raised.value.status == 404
     assert "not registered" in raised.value.reason
+
+
+# -- jobs -----------------------------------------------------------------------------------------
+#
+# What an application *is*, as opposed to what it is written in. A job runs once and finishes, so
+# the two things worth checking are that the fields are left out when nothing was said about them -
+# an older server must not be handed one - and that a schedule cannot be set on a process.
+
+
+def test_deploying_a_job_on_a_schedule(gateway, eap):
+    gateway.answer("eap", "create-application", dict(
+        APPLICATION, applicationId="nightly-report", type="JOB", schedule="0 2 * * *",
+        nextRunAt="2026-10-16T02:00:00Z", state="STOPPED", instances=0, endpoints=[]))
+
+    application = eap.create_application("nightly-report", JAVA21, "artifacts", "report.jar",
+                                         type=JOB, schedule="0 2 * * *")
+
+    sent = gateway.last().json()
+    assert (sent["type"], sent["schedule"]) == ("JOB", "0 2 * * *")
+    assert (application.type, application.schedule) == ("JOB", "0 2 * * *")
+    assert application.next_run_at == "2026-10-16T02:00:00Z"
+    assert application.is_job and application.is_scheduled
+    # A finished job is STOPPED, which on a process would mean something had gone wrong.
+    assert application.is_running is False
+
+
+def test_a_deployment_that_says_nothing_about_the_type_sends_nothing(gateway, eap):
+    """So that an installation older than these fields is not handed one, and the type it already
+    defaults to is the one that applies."""
+    gateway.answer("eap", "create-application", APPLICATION)
+
+    eap.create_application("order-service", JAVA, "artifacts", "order-service.jar")
+
+    sent = gateway.last().json()
+    assert "type" not in sent and "schedule" not in sent
+
+
+def test_a_schedule_without_a_job_says_so_before_the_round_trip(gateway, eap):
+    """A schedule on something that stays up is a setting that would never fire."""
+    with pytest.raises(ValueError, match="only valid on a JOB"):
+        eap.create_application("order-service", JAVA, "artifacts", "o.jar",
+                               schedule="0 2 * * *")
+
+    assert [r for r in gateway.requests if r.action == "create-application"] == []
+
+
+def test_an_update_sends_an_empty_schedule_because_that_unschedules(gateway, eap):
+    """Unlike a create, where an empty one means "nothing to say"."""
+    gateway.answer("eap", "update-application", dict(APPLICATION, type="JOB", schedule=""))
+
+    updated = eap.update_application("nightly-report", schedule="")
+
+    assert gateway.last().json() == {"applicationId": "nightly-report", "schedule": ""}
+    assert updated.is_job and not updated.is_scheduled
+
+
+def test_an_update_can_turn_a_process_into_a_job(gateway, eap):
+    gateway.answer("eap", "update-application", dict(APPLICATION, type="JOB"))
+
+    assert eap.update_application("order-service", type=JOB).is_job
+
+    assert gateway.last().json() == {"applicationId": "order-service", "type": "JOB"}
+
+
+def test_a_type_the_server_does_not_recognise_is_refused_there(gateway, eap):
+    """Rather than read as PROCESS: "job" in the wrong case would otherwise deploy something that
+    stays up forever, which is the opposite of what was asked for."""
+    gateway.answer("eap", "create-application",
+                   {"error": "type must be PROCESS or JOB, not 'job'"}, status=400)
+
+    with pytest.raises(EuclidServiceError) as raised:
+        eap.create_application("nightly", JAVA, "artifacts", "n.jar", type="job")
+
+    assert raised.value.status == 400
+    assert "PROCESS or JOB" in raised.value.reason
+
+
+def test_an_application_with_no_schedule_reports_no_next_run(gateway, eap):
+    """Empty rather than the epoch, which would read as a job fifty years overdue."""
+    gateway.answer("eap", "get-application", dict(APPLICATION, type="PROCESS"))
+
+    application = eap.get_application("order-service")
+
+    assert (application.schedule, application.next_run_at) == ("", "")
+    assert not application.is_job and not application.is_scheduled
+
+
+def test_the_application_type_constants_are_the_strings_eap_accepts():
+    assert (PROCESS, JOB) == ("PROCESS", "JOB")

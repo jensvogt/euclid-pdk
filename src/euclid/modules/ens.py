@@ -31,8 +31,8 @@ from typing import Any, Mapping
 from ..dto.com import Variant
 from ..dto.ens import (Message, Topic, CreateTopicResult, ListTopicsResult, MessageAttribute, MessageCount,
                        MessagesResult, ResendResult, SubscribeResult, Subscription,
-                       TopicMaxMessageLengthResult, TopicMetadata, TopicRetentionResult,
-                       TopicStateResult, UpdateMessageBodyResult)
+                       TopicDeleteAfterDeliveryResult, TopicMaxMessageLengthResult, TopicMetadata,
+                       TopicRetentionResult, TopicStateResult, UpdateMessageBodyResult)
 from ..exceptions import EuclidServiceError
 from .base import ModuleClient
 
@@ -261,6 +261,37 @@ class EuclidEns(ModuleClient):
                              "stop_topic is how a topic stops taking anything")
         return TopicMaxMessageLengthResult.from_json(self._call("set-topic-max-message-length", {
             "ern": ern, "maxMessageLength": max_message_length}))
+
+    def set_topic_delete_after_delivery(self, ern: str,
+                                        delete_after_delivery: bool = True
+                                        ) -> TopicDeleteAfterDeliveryResult:
+        """Makes a topic drop each message once every subscription has it, rather than keeping it
+        for the retention period.
+
+        Off until it is turned on here, which is how topics have always behaved and how one created
+        before this setting existed reads back.
+
+        **"Handed to" is not "consumed".** A publish fans a message out to the subscriptions at
+        once - one event per subscription, written to the event bus, which holds it until EQS has
+        turned it into a queue message. With this on, the topic's own copy goes right after that,
+        and the queue messages are what remain. A message published while the topic is stopped is
+        held rather than handed on, and goes when :meth:`start_topic` delivers it; a message on a
+        topic with *no* subscription has been handed to nobody, so it is kept for the retention
+        period as on any topic rather than quietly lost undelivered.
+
+        **What it costs is :meth:`resend_messages`.** That works from the topic's record of what
+        was published, so a message this deletes cannot be sent again - a subscriber that was down,
+        was subscribed after the fact, or acknowledged a message and then failed to process it has
+        no way back to it. The trade is a topic that does not grow against a topic that can be
+        replayed, and it is worth making deliberately.
+
+        Applies to what is published from here on. The messages already held were delivered under
+        the old rule and stay until their retention runs out - turning this on is not a purge, and
+        :meth:`purge_topic` is what is.
+        """
+        return TopicDeleteAfterDeliveryResult.from_json(
+            self._call("set-topic-delete-after-delivery", {
+                "ern": ern, "deleteAfterDelivery": delete_after_delivery}))
 
     def purge_topic(self, ern: str) -> None:
         """Deletes every message a topic has kept, leaving the topic and its subscriptions in place.

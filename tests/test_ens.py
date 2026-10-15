@@ -433,3 +433,37 @@ def test_a_published_message_can_be_read_back_by_id(gateway, ens):
 
     assert gateway.last().json() == {"messageId": "m-1"}
     assert (message.message_id, message.body) == ("m-1", "hello")
+
+
+def test_a_topic_can_drop_a_message_once_every_subscription_has_it(gateway, ens):
+    """Off until it is turned on, which is how topics have always behaved."""
+    gateway.answer("ens", "set-topic-delete-after-delivery",
+                   {"ern": TOPIC, "deleteAfterDelivery": True})
+
+    result = ens.set_topic_delete_after_delivery(TOPIC)
+
+    assert gateway.last().json() == {"ern": TOPIC, "deleteAfterDelivery": True}
+    assert (result.ern, result.delete_after_delivery) == (TOPIC, True)
+
+
+def test_dropping_after_delivery_can_be_turned_back_off(gateway, ens):
+    gateway.answer("ens", "set-topic-delete-after-delivery",
+                   {"ern": TOPIC, "deleteAfterDelivery": False})
+
+    assert ens.set_topic_delete_after_delivery(TOPIC, False).delete_after_delivery is False
+    # Sent rather than left out: false is the instruction to keep messages again.
+    assert gateway.last().json()["deleteAfterDelivery"] is False
+
+
+def test_metadata_says_whether_a_topic_keeps_what_it_delivered(gateway, ens):
+    """Which is what decides whether resend_messages has anything to work from."""
+    gateway.answer("ens", "get-topic-metadata", {"name": "order-events", "ern": TOPIC,
+                                                 "retentionPeriod": 604800,
+                                                 "deleteAfterDelivery": True, "held": 0})
+
+    metadata = ens.get_topic_metadata(TOPIC)
+
+    assert metadata.delete_after_delivery is True
+    # A topic the server said nothing about reads as keeping them, which is the default.
+    gateway.answer("ens", "get-topic-metadata", {"name": "order-events", "ern": TOPIC})
+    assert ens.get_topic_metadata(TOPIC).delete_after_delivery is False

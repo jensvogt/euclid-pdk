@@ -89,6 +89,19 @@ class Application:
     min_instances: int = 0
     max_instances: int = 0
     ready_timeout_ms: int = 0
+    #: :data:`~euclid.modules.eap.PROCESS` or :data:`~euclid.modules.eap.JOB` - what this
+    #: application is, as opposed to what it is written in. A job is not restarted when it exits 0
+    #: and is not autoscaled; a process is held at its instance count.
+    type: str = ""
+    #: The cron expression a job runs on, in UTC. Empty on a process, and on a job that runs only
+    #: when it is started.
+    schedule: str = ""
+    #: When the schedule next fires, as an ISO 8601 timestamp.
+    #:
+    #: Empty rather than the epoch when there is no schedule: "no schedule" is stored as the epoch,
+    #: and formatting that would read as a job fifty years overdue rather than one that is not
+    #: scheduled at all.
+    next_run_at: str = ""
     #: ``RUNNING`` or ``STOPPED``, as asked for.
     desired_state: str = ""
     #: ``RUNNING`` or ``STOPPED``, as observed.
@@ -115,6 +128,8 @@ class Application:
             _json.strings(document, "resources"), _json.text(document, "userId"),
             _json.text(document, "logLevel"), _json.number(document, "minInstances"),
             _json.number(document, "maxInstances"), _json.number(document, "readyTimeoutMs"),
+            _json.text(document, "type"), _json.text(document, "schedule"),
+            _json.text(document, "nextRunAt"),
             _json.text(document, "desiredState"), _json.text(document, "state"),
             _json.number(document, "instances"),
             [Endpoint.from_json(e) for e in _json.documents(document, "endpoints")],
@@ -124,6 +139,20 @@ class Application:
     def is_running(self) -> bool:
         """Whether anything is actually answering, which is not the same as having been started."""
         return self.state == "RUNNING"
+
+    @property
+    def is_job(self) -> bool:
+        """Whether this runs once and finishes rather than staying up.
+
+        Worth asking before reading :attr:`state`: a job that has finished is ``STOPPED``, which on
+        a process would mean something had gone wrong and on a job means it did its work.
+        """
+        return self.type == "JOB"
+
+    @property
+    def is_scheduled(self) -> bool:
+        """Whether this job runs on a schedule as well as on demand."""
+        return bool(self.schedule)
 
 
 @dataclass

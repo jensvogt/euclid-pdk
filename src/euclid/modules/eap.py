@@ -31,12 +31,28 @@ from ..dto.eap import (Application, InfrastructureResult, ListNodesResult, LogLe
 from .base import ModuleClient
 
 __all__ = ["EuclidEap", "TARGET", "JAVA", "JAVA21", "JAVA25", "PYTHON", "NODEJS", "BINARY",
+           "PROCESS", "JOB",
            "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "OFF",
            "DEFAULT_MIN_INSTANCES", "DEFAULT_MAX_INSTANCES", "DEFAULT_READY_TIMEOUT_MS"]
 
 TARGET = "eap"
 
 #: What an artifact is handed to. Matched exactly, in upper case, and anything else is refused with
+#: What an application *is*, as opposed to what it is written in: something that stays up.
+#:
+#: Held at its instance count for as long as it is wanted, restarted when it exits, and autoscaled
+#: between its bounds. The default, and what every application deployed before this setting existed
+#: reads back as.
+PROCESS = "PROCESS"
+
+#: Something that runs once and finishes.
+#:
+#: Not restarted when it exits 0 - finishing is the point rather than a failure - and not autoscaled,
+#: since there is no steady state to scale. A job with no ``schedule`` runs when it is started and
+#: not otherwise; one with a schedule runs on it as well. See
+#: :meth:`EuclidEap.create_application`.
+JOB = "JOB"
+
 #: HTTP 400 - :data:`JAVA21` is a runtime, ``java21`` and ``JAVA 21`` are typos.
 #:
 #: :data:`JAVA` is whichever java the host calls java, which is what every application deployed
@@ -88,7 +104,8 @@ class EuclidEap(ModuleClient):
                            buckets: Iterable[str] = (), queues: Iterable[str] = (), user: str = "",
                            min_instances: int = DEFAULT_MIN_INSTANCES,
                            max_instances: int = DEFAULT_MAX_INSTANCES,
-                           ready_timeout_ms: int = DEFAULT_READY_TIMEOUT_MS) -> Application:
+                           ready_timeout_ms: int = DEFAULT_READY_TIMEOUT_MS,
+                           type: str = "", schedule: str = "") -> Application:
         """Deploys an application, stopped, and returns it as it was stored.
 
         Nothing runs yet: a new application's desired state is ``STOPPED``, so
@@ -118,14 +135,35 @@ class EuclidEap(ModuleClient):
         :param min_instances: the smallest the pool goes; at least 1.
         :param max_instances: the largest it goes; never below ``min_instances``.
         :param ready_timeout_ms: how long an instance has to become ready; at least 1000.
+        :param type: :data:`PROCESS`, the default, for something that stays up, or :data:`JOB` for
+            something that runs once and finishes. Left empty, the field is not sent at all and the
+            server's own default - ``PROCESS`` - applies, so an older installation is not handed a
+            field it has no meaning for.
+        :param schedule: a cron expression a :data:`JOB` runs on, in UTC - ``"0 2 * * *"``, or one
+            of the ``@daily`` shorthands. Only meaningful on a job.
+        :raises ValueError: if a schedule is given without ``type=JOB``, which the server refuses
+            anyway - a schedule on a process is a setting that would never fire.
+
+        The server refuses a type it does not recognise rather than reading it as ``PROCESS``:
+        ``"job"`` in the wrong case would otherwise deploy something that stays up forever, which
+        is the opposite of what was asked for.
         """
-        return self._application("create-application", {
+        if schedule and type != JOB:
+            raise ValueError(f"schedule is only valid on a {JOB}; pass type={JOB!r} as well")
+        payload: dict[str, Any] = {
             "applicationId": application_id, "runtime": runtime, "bucket": bucket,
             "artifact": artifact, "version": version, "command": command,
             "arguments": list(arguments), "environment": dict(environment or {}),
             "buckets": list(buckets), "queues": list(queues), "user": user,
             "minInstances": min_instances, "maxInstances": max_instances,
-            "readyTimeoutMs": ready_timeout_ms})
+            "readyTimeoutMs": ready_timeout_ms}
+        # Left out entirely when not asked for, so that a server older than these fields is not
+        # handed one, and the type it already defaults to is the one that applies.
+        if type:
+            payload["type"] = type
+        if schedule:
+            payload["schedule"] = schedule
+        return self._application("create-application", payload)
 
     def update_application(self, application_id: str, runtime: str | None = None,
                            artifact: str | None = None, version: str | None = None,
@@ -134,7 +172,9 @@ class EuclidEap(ModuleClient):
                            buckets: Iterable[str] | None = None, queues: Iterable[str] | None = None,
                            min_instances: int | None = None, max_instances: int | None = None,
                            ready_timeout_ms: int | None = None,
-                           namespace: str | None = None) -> Application:
+                           namespace: str | None = None,
+                           type: str | None = None,
+                           schedule: str | None = None) -> Application:
         """Changes a deployed application. Only what this names changes.
 
         The distinction the server draws is between a field being sent and not being sent, rather
@@ -151,6 +191,11 @@ class EuclidEap(ModuleClient):
 
         Changing the artifact is a change of what will run next; :meth:`redeploy_application` is
         what a new build of the same application usually wants.
+
+        ``type`` turns a process into a job or back. ``schedule`` is sent even when empty, because
+        there an empty one is the instruction to *unschedule* - which is how a job goes back to
+        running only when it is started. That is the difference from :meth:`create_application`,
+        where an empty schedule means "nothing to say".
         """
         payload: dict[str, Any] = {"applicationId": application_id}
         if runtime is not None:
@@ -177,6 +222,10 @@ class EuclidEap(ModuleClient):
             payload["readyTimeoutMs"] = ready_timeout_ms
         if namespace is not None:
             payload["namespace"] = namespace
+        if type is not None:
+            payload["type"] = type
+        if schedule is not None:
+            payload["schedule"] = schedule
         return self._application("update-application", payload)
 
     def copy_application(self, application_id: str, target_namespace: str,

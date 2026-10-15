@@ -29,6 +29,7 @@ __all__ = [
     "UpdateMessageBodyResult",
     "TopicRetentionResult",
     "TopicMaxMessageLengthResult",
+    "TopicDeleteAfterDeliveryResult",
 ]
 
 
@@ -187,6 +188,10 @@ class TopicMetadata:
     status: str = ""
     #: How long a published message is kept, in seconds; zero follows the installation's default.
     retention_period: int = 0
+    #: Whether the topic drops each message as soon as every subscription has it, rather than
+    #: keeping it for the retention period - see
+    #: :meth:`~euclid.modules.ens.EuclidEns.set_topic_delete_after_delivery`.
+    delete_after_delivery: bool = False
     #: How many messages are waiting for this topic to be started again. Nothing but a stopped
     #: topic - or one that was stopped - has any.
     held: int = 0
@@ -198,7 +203,8 @@ class TopicMetadata:
             _json.text(document, "owner"), _json.text(document, "nameSpace"),
             _json.text(document, "name"), _json.text(document, "ern"), _json.number(document, "size"),
             _json.number(document, "messages"), _json.text(document, "status"),
-            _json.number(document, "retentionPeriod"), _json.number(document, "held"))
+            _json.number(document, "retentionPeriod"),
+            _json.flag(document, "deleteAfterDelivery"), _json.number(document, "held"))
 
 
 @dataclass
@@ -325,6 +331,19 @@ class TopicMaxMessageLengthResult:
     def from_json(document: Any) -> "TopicMaxMessageLengthResult":
         return TopicMaxMessageLengthResult(_json.text(document, "ern"),
                                            _json.number(document, "maxMessageLength"))
+
+
+@dataclass
+class TopicDeleteAfterDeliveryResult:
+    """Whether a topic now drops a message once every subscription has it."""
+
+    ern: str = ""
+    delete_after_delivery: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "TopicDeleteAfterDeliveryResult":
+        return TopicDeleteAfterDeliveryResult(_json.text(document, "ern"),
+                                              _json.flag(document, "deleteAfterDelivery"))
 
 
 @dataclass

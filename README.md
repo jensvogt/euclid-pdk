@@ -412,6 +412,7 @@ instrumentation that polls every few seconds would otherwise keep a pool permane
 | `stop_topic`, `start_topic` | holding delivery, and letting it go again |
 | `resend_messages` | handing what the topic still holds to its subscribers again |
 | `set_topic_retention`, `set_topic_max_message_length` | how long a published message is kept, and how large it may be |
+| `set_topic_delete_after_delivery` | dropping a message once every subscription has it |
 | `publish_message`, `list_messages`, `get_message_count`, `purge_topic`, `purge_all_topics` | messages |
 | `get_message_attribute`, `set_message_attribute` | message attributes |
 | `subscribe`, `unsubscribe`, `list_subscriptions` | delivering a topic's messages to a queue |
@@ -471,6 +472,23 @@ apart the way a queue's can. Zero here is not "follow the installation's default
 accepts nothing, which the server refuses and this SDK refuses first; taking nothing for a while is
 what `stop_topic` is for, and that says so reversibly and without losing what is published meanwhile.
 As with retention, the change applies to what is published afterwards.
+
+**A topic can drop a message once every subscription has it** rather than keeping it for the
+retention period. Off until `set_topic_delete_after_delivery(topic_ern)` turns it on, which is how
+topics have always behaved.
+
+"Handed to" is not "consumed": a publish fans a message out to the subscriptions at once — one event
+per subscription, written to the event bus, which holds it until EQS has turned it into a queue
+message. With this on, the topic's own copy goes right after that, and the queue messages are what
+remain. A message published while the topic is stopped is held rather than handed on and goes when
+`start_topic` delivers it; a message on a topic with *no* subscription has been handed to nobody, so
+it is kept for the retention period rather than quietly lost undelivered.
+
+What it costs is `resend_messages`, which works from the topic's record of what was published — so a
+message this deletes cannot be sent again, and a subscriber that was down or failed to process what
+it received has no way back to it. A topic that does not grow against a topic that can be replayed,
+and worth choosing deliberately. `get_topic_metadata(...).delete_after_delivery` says which a topic
+is.
 
 Two field names are the server's own asymmetry rather than a typo here: a message attribute travels
 as `key` throughout ENS and as `name` in most of EQS, and this SDK reproduces both rather than
@@ -657,6 +675,7 @@ through.
 | Method | Action |
 | --- | --- |
 | `create_application`, `update_application`, `redeploy_application`, `delete_application` | deploying |
+| `type=JOB`, `schedule=` on a create or update | something that runs once and finishes |
 | `start_application`, `stop_application` | running |
 | `list_applications`, `get_application` | what is deployed, and what is answering |
 | `copy_application`, `scale_application`, `restart_application` | moving, sizing and cycling one |
@@ -704,6 +723,36 @@ A few things this SDK reproduces rather than smooths over:
 defaults to the one already deployed and the version to whatever the artifact's name says. A
 redeploy that would change neither the version nor the checksum is refused with HTTP 409 — it would
 restart the instances for nothing, and usually means the new artifact never reached the bucket.
+
+### Processes and jobs
+
+An application is a `PROCESS` unless it says otherwise — something that stays up, held at its
+instance count, restarted when it exits and autoscaled between its bounds. A `JOB` runs once and
+finishes: it is not restarted when it exits 0, because finishing is the point rather than a failure,
+and it is not autoscaled, because there is no steady state to scale.
+
+```python
+from euclid.modules.eap import JAVA21, JOB
+
+eap.create_application("nightly-report", JAVA21, "artifacts", "report.jar",
+                       type=JOB, schedule="0 2 * * *")      # cron, in UTC
+
+eap.update_application("nightly-report", schedule="")        # unschedule; on demand only
+```
+
+A job with no `schedule` runs when it is started and not otherwise; one with a schedule runs on it
+as well. `Application.is_job` and `is_scheduled` are the two questions worth asking before reading
+`state`, since a job that has finished is `STOPPED` — which on a process would mean something had
+gone wrong and on a job means it did its work. `next_run_at` is when the schedule next fires, and is
+empty rather than 1970 when there is no schedule.
+
+Two asymmetries, both deliberate. `create_application` leaves `type` and `schedule` out of the
+request entirely when they are not given, so an installation older than these fields is not handed
+one and the server's own `PROCESS` default applies; `update_application` sends an empty `schedule`,
+because there it is the instruction to *unschedule*. And a schedule without `type=JOB` raises
+`ValueError` here rather than costing a round trip — a schedule on something that stays up is a
+setting that would never fire. The server refuses a type it does not recognise rather than reading
+it as `PROCESS`: `"job"` in the wrong case would otherwise deploy something that never stops.
 
 ### Nodes
 
