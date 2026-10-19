@@ -165,7 +165,8 @@ class EuclidEes(ModuleClient):
         return self.ack_events(name, [event_id])
 
     def ack_events(self, name: str, event_ids: Sequence[str]) -> AckEventsResult:
-        """Acknowledges events, and says how many went and what is still waiting.
+        """Acknowledges events, and says how many went; :meth:`list_subscriptions` says what is
+        still waiting.
 
         After the work rather than before it: an event that is claimed and never acknowledged comes
         back when its visibility timeout runs out, which is what makes a consumer that dies

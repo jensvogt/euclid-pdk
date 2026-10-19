@@ -129,17 +129,19 @@ class SubscriptionsResult:
 
 @dataclass
 class AckEventsResult:
-    """How many events were acknowledged, and what is still waiting afterwards."""
+    """How many events were acknowledged.
+
+    Not how many are still waiting: counting scans the subscriber's whole backlog, too much to pay
+    on every acknowledgement. :meth:`~euclid.modules.ees.EuclidEes.list_subscriptions` reports it.
+    """
 
     subscriber: str = ""
     acknowledged: int = 0
-    waiting: int = 0
 
     @staticmethod
     def from_json(document: Any) -> "AckEventsResult":
         return AckEventsResult(_json.text(document, "subscriber"),
-                               _json.number(document, "acknowledged"),
-                               _json.number(document, "waiting"))
+                               _json.number(document, "acknowledged"))
 
 
 @dataclass
