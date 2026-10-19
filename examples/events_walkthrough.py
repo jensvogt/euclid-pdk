@@ -91,11 +91,11 @@ def walk(esm, ees, bucket_ern: str, name: str) -> None:
 
             # After the work, not before: an event claimed and never acknowledged comes back when
             # its visibility timeout runs out, which is what makes a consumer that dies harmless.
-            receipt = ees.ack_event(name, event.event_id)
-            print(f"      acknowledged; {receipt.waiting} still waiting")
+            ees.ack_event(name, event.event_id)
+            print("      acknowledged")
             consumed += 1
 
-    print(f"\nconsumed {consumed} event(s)")
+    print(f"\nconsumed {consumed} event(s); {ees.list_subscriptions(name).waiting} still waiting")
 
     # Deleting one of them produces an event of the other type this subscriber asked for.
     esm.delete_objects(bucket_ern, ["invoices/2026/q3.pdf"])

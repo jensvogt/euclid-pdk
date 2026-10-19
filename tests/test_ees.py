@@ -88,8 +88,7 @@ class FakeEvents:
             if self.events.get(event_id, (None, False))[1]:
                 del self.events[event_id]
                 acknowledged += 1
-        return 200, {"subscriber": body["name"], "acknowledged": acknowledged,
-                     "waiting": self.waiting}
+        return 200, {"subscriber": body["name"], "acknowledged": acknowledged}
 
     def list_subscriptions(self, request: RecordedRequest) -> tuple[int, dict]:
         name = request.json()["name"]
@@ -195,7 +194,8 @@ def test_claiming_and_acknowledging_events(gateway, ees, events):
 
     acknowledged = ees.ack_events(SUBSCRIBER, [e.event_id for e in result.events])
     assert gateway.last().json() == {"name": SUBSCRIBER, "eventIds": ["event-1", "event-2"]}
-    assert (acknowledged.acknowledged, acknowledged.waiting) == (2, 0)
+    assert acknowledged.acknowledged == 2
+    assert ees.list_subscriptions(SUBSCRIBER).waiting == 0
 
 
 def test_acknowledging_one_event_at_a_time(gateway, ees, events):
@@ -215,7 +215,8 @@ def test_an_event_that_was_never_claimed_cannot_be_acknowledged(gateway, ees, ev
 
     result = ees.ack_event(SUBSCRIBER, "event-1")
 
-    assert (result.acknowledged, result.waiting) == (0, 1)
+    assert result.acknowledged == 0
+    assert ees.list_subscriptions(SUBSCRIBER).waiting == 1
 
 
 def test_asking_for_no_wait_says_so(gateway, ees, events):
