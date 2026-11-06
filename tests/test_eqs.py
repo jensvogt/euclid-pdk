@@ -522,3 +522,20 @@ def test_exists_queue_raises_when_it_could_not_tell(gateway, eqs, status):
     with pytest.raises(EuclidServiceError) as raised:
         eqs.exists_queue("orders")
     assert raised.value.status == status
+
+
+def test_setting_how_often_a_message_may_be_received(gateway, eqs):
+    """Counts receives rather than failures: a consumer that takes a message and dies without
+    deleting it has used one, which is what the count is there to catch."""
+    gateway.answer("eqs", "set-queue-max-retries", {"ern": QUEUE, "maxRetries": 5})
+
+    assert eqs.set_queue_max_retries(QUEUE, 5) == 5
+    assert gateway.last().json() == {"ern": QUEUE, "maxRetries": 5}
+
+
+def test_a_retry_count_outside_what_the_server_takes(gateway, eqs):
+    for refused in (0, 1001):
+        with pytest.raises(ValueError, match="between 1 and 1000"):
+            eqs.set_queue_max_retries(QUEUE, refused)
+
+    assert [r for r in gateway.requests if r.action == "set-queue-max-retries"] == []

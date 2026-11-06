@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 
 from euclid import Euclid, EuclidServiceError
-from euclid.modules.eap import (BINARY, DEBUG, JAVA, JAVA21, JAVA25, JOB, NODEJS, PROCESS,
-                                PYTHON)
+from euclid.modules.eap import (BINARY, DEBUG, EVERY_SITE, JAVA, JAVA21, JAVA25, JOB, NODEJS,
+                                PROCESS, PYTHON, RUST)
 from test_eam import prepared
 
 APPLICATION = {
@@ -580,3 +580,142 @@ def test_an_application_with_no_schedule_reports_no_next_run(gateway, eap):
 
 def test_the_application_type_constants_are_the_strings_eap_accepts():
     assert (PROCESS, JOB) == ("PROCESS", "JOB")
+
+
+# -- limits, platforms and egress -----------------------------------------------------------------
+
+
+def test_capping_memory_and_cpu(gateway, eap):
+    """The two caps fail differently: memory is killed, CPU is throttled."""
+    gateway.answer("eap", "set-application-limits",
+                   dict(APPLICATION, memoryLimitMb=512, cpuLimit=1.5))
+
+    application = eap.set_application_limits("order-service", memory_limit_mb=512, cpu_limit=1.5)
+
+    assert gateway.last().json() == {"applicationId": "order-service",
+                                     "memoryLimitMb": 512, "cpuLimit": 1.5}
+    assert (application.memory_limit_mb, application.cpu_limit) == (512, 1.5)
+
+
+def test_capping_nothing_at_all_says_so_before_the_round_trip(gateway, eap):
+    with pytest.raises(ValueError, match="0 removes a limit"):
+        eap.set_application_limits("order-service")
+
+    assert [r for r in gateway.requests if r.action == "set-application-limits"] == []
+
+
+def test_an_uncapped_deployment_sends_no_limits(gateway, eap):
+    """So an installation older than cgroup limits is not handed one."""
+    gateway.answer("eap", "create-application", APPLICATION)
+
+    eap.create_application("order-service", JAVA, "artifacts", "o.jar")
+
+    sent = gateway.last().json()
+    assert "memoryLimitMb" not in sent and "cpuLimit" not in sent
+
+
+def test_rebalancing_asks_rather_than_moves(gateway, eap):
+    """What a pool wants after a node joins or is drained - nothing moves the instances on its
+    own."""
+    gateway.answer("eap", "rebalance-application", {"applicationId": "order-service",
+                                                    "rebalancing": True, "instances": 4})
+
+    result = eap.rebalance_application("order-service")
+
+    assert gateway.last().json() == {"applicationId": "order-service"}
+    assert (result.rebalancing, result.instances) == (True, 4)
+
+
+def test_planning_infrastructure_writes_nothing(gateway, eap):
+    """The deleted list is the half worth reading before an apply rather than after."""
+    gateway.answer("eap", "plan-infrastructure", {
+        "applicationId": "order-service", "declared": True, "created": ["ern:eqs:queue/new"],
+        "deleted": ["ern:eqs:queue/old"], "granted": [], "revoked": []})
+
+    plan = eap.plan_infrastructure("order-service")
+
+    assert gateway.last().json() == {"applicationId": "order-service"}
+    assert plan.deleted == ["ern:eqs:queue/old"]
+
+
+def test_a_platform_declaration_is_the_namespaces_rather_than_one_applications(gateway, eap):
+    gateway.answer("eap", "get-platform", {
+        "name": "platform", "namespace": "development", "owns": ["ern:eqs:queue/shared"],
+        "declaration": {"queues": [{"name": "shared"}]}, "modified": "2026-11-01"})
+    gateway.answer("eap", "list-platforms", {"platforms": [{"name": "platform"}]})
+
+    platform = eap.get_platform()
+
+    assert gateway.last().json() == {"name": "platform"}
+    assert platform.owns == ["ern:eqs:queue/shared"]
+    assert platform.declaration == {"queues": [{"name": "shared"}]}
+    assert [p.name for p in eap.list_platforms()] == ["platform"]
+
+
+def test_a_stored_declaration_that_cannot_be_read_back_is_none(gateway, eap):
+    """Which is a stored declaration that would not apply, rather than an empty one."""
+    gateway.answer("eap", "get-platform", {"name": "platform", "declaration": None})
+
+    assert eap.get_platform().declaration is None
+
+
+def test_listing_egress_sites_says_what_an_unlimited_one_is_held_to(gateway, eap):
+    gateway.answer("eap", "list-egress-sites", {
+        "defaultLimits": {"requestsPerSecond": 100, "burst": 200, "concurrent": 10},
+        "sites": [
+            {"applicationId": "order-service", "site": "api.example.com",
+             "limits": {"requestsPerSecond": 10, "burst": 20, "concurrent": 2}, "limitsSet": True},
+            {"applicationId": "order-service", "site": "other.example.com",
+             "limits": {"requestsPerSecond": 100, "burst": 200, "concurrent": 10},
+             "limitsSet": False}]})
+
+    result = eap.list_egress_sites("order-service")
+
+    assert gateway.last().json() == {"applicationId": "order-service"}
+    assert result.default_limits.requests_per_second == 100
+    # The numbers read the same either way; only limits_set says whether anybody chose them.
+    assert [s.limits_set for s in result.sites] == [True, False]
+    assert result.sites[1].limits.requests_per_second == 100
+
+
+def test_setting_and_removing_an_egress_limit(gateway, eap):
+    gateway.answer("eap", "set-egress-limit", {
+        "applicationId": "order-service", "site": "api.example.com",
+        "limits": {"requestsPerSecond": 10, "burst": 20, "concurrent": 2}})
+    gateway.answer("eap", "delete-egress-limit", {
+        "applicationId": "order-service", "site": "api.example.com",
+        "limits": {"requestsPerSecond": 100}})
+    gateway.answer("eap", "delete-egress-site", {
+        "applicationId": "order-service", "site": "api.example.com", "removed": True})
+
+    site = eap.set_egress_limit("order-service", "api.example.com",
+                                requests_per_second=10, burst=20, concurrent=2)
+    assert gateway.last().json() == {"applicationId": "order-service", "site": "api.example.com",
+                                     "requestsPerSecond": 10, "burst": 20, "concurrent": 2}
+    assert site.limits.concurrent == 2
+
+    # Removing the limit leaves the site listed, under the default.
+    back = eap.delete_egress_limit("order-service", "api.example.com")
+    assert back.limits.requests_per_second == 100
+
+    assert eap.delete_egress_site("order-service", "api.example.com").removed is True
+
+
+def test_an_egress_limit_that_bounds_nothing_says_so_before_the_round_trip(gateway, eap):
+    with pytest.raises(ValueError, match="at least one of"):
+        eap.set_egress_limit("order-service", "api.example.com")
+
+    assert [r for r in gateway.requests if r.action == "set-egress-limit"] == []
+
+
+def test_egress_defaults_to_every_site(gateway, eap):
+    gateway.answer("eap", "set-egress-limit", {"applicationId": "order-service", "site": "*",
+                                               "limits": {"concurrent": 5}})
+
+    eap.set_egress_limit("order-service", concurrent=5)
+
+    assert gateway.last().json()["site"] == EVERY_SITE
+
+
+def test_rust_is_one_of_the_runtimes():
+    assert RUST == "RUST"

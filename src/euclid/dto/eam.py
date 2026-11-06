@@ -39,6 +39,7 @@ __all__ = [
     "ListUsersResult",
     "ListUserGroupsResult",
     "ListAccountsResult",
+    "ListMyAccountsResult",
     "ListNamespacesResult",
     "CreateAccessKeyResult",
 ]
@@ -376,3 +377,27 @@ class CreateAccessKeyResult:
         return CreateAccessKeyResult(
             _text(document, "accessKeyId"), _text(document, "secretAccessKey"), _text(document, "createdAt"),
             Metadata.from_json(document.get("metadata") if isinstance(document, dict) else None))
+
+
+@dataclass
+class ListMyAccountsResult:
+    """The accounts the caller may work in, and which of them is their home.
+
+    ``home_account_id`` is always among :attr:`accounts`, and is the one to select when the user
+    has not chosen - which is what makes this answer usable as a picker without a second call.
+
+    An account a grant reaches but whose record the caller may not read comes back carrying its id
+    and little else. That is deliberate rather than an error: being able to work somewhere and
+    being able to inspect it are different rights.
+    """
+
+    accounts: list[Account] = field(default_factory=list)
+    total: int = 0
+    home_account_id: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "ListMyAccountsResult":
+        items = document.get("accounts") if isinstance(document, dict) else None
+        return ListMyAccountsResult(
+            [Account.from_json(a) for a in items] if isinstance(items, list) else [],
+            _number(document, "total"), _text(document, "homeAccountId"))

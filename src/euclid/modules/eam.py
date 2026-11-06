@@ -22,7 +22,8 @@ from ..credentials import load as load_credentials
 from ..credentials import save as save_credentials
 from ..credentials import update_namespace as update_cached_namespace
 from ..dto.eam import (AccessKey, Account, CreateAccessKeyResult, Grant, ListAccountsResult,
-                       ListGrantsResult, ListNamespacesResult, ListRolesResult, ListUserGroupsResult,
+                       ListGrantsResult, ListMyAccountsResult, ListNamespacesResult, ListRolesResult,
+                       ListUserGroupsResult,
                        ListUsersResult, LoginResult, Namespace, PermissionCheck,
                        PermissionVocabulary, Role, User, UserGroup)
 from ..exceptions import EuclidAuthenticationError, EuclidServiceError
@@ -419,6 +420,17 @@ class EuclidSession:
                              "use change_password(old_password, new_password) for your own")
         self._call("change-password", {"userId": user_id, "newPassword": new_password})
 
+    def change_email(self, user_id: str, email: str) -> User:
+        """Changes a user's email address, and returns them as they now stand. Administrator only.
+
+        The server checks the shape of the address - one ``@`` with something either side, a dot in
+        the domain, no whitespace - and refuses anything else with HTTP 400. That is a sanity check
+        rather than verification: nothing is sent to the address, so a well-formed one that nobody
+        reads is accepted.
+        """
+        return User.from_json(self._call("change-email", {
+            "userId": user_id, "email": email}).get("user", {}))
+
     def change_userid(self, user_id: str, new_user_id: str) -> User:
         """Renames a user, and returns them as they now stand. Administrator only.
 
@@ -433,6 +445,19 @@ class EuclidSession:
         """
         return User.from_json(self._call("change-userid", {
             "userId": user_id, "newUserId": new_user_id}).get("user", {}))
+
+    def list_my_accounts(self) -> ListMyAccountsResult:
+        """The accounts this session may work in, and which one is its home.
+
+        Not :meth:`list_accounts`, which is every account in the installation and administrator
+        only. This is the caller's own reachable set - their home account plus wherever a grant
+        takes them - so it is the listing a client offers somebody choosing where to work.
+
+        ``home_account_id`` is always among them, and is what to select when the user has not said.
+        An account a grant reaches but whose record the caller may not read comes back with its id
+        and little else, which is the honest rendering of "you may work here but not inspect it".
+        """
+        return ListMyAccountsResult.from_json(self._call("list-my-accounts", {}))
 
     # -- namespace scoping -------------------------------------------------------------------
 

@@ -40,6 +40,9 @@ class Route:
     #: Whether the gateway is serving this path at all - see
     #: :meth:`~euclid.modules.eag.EuclidEag.set_route_active`.
     active: bool = True
+    #: How long the gateway waits for this route's target, in seconds; zero follows the gateway's
+    #: own default - see :meth:`~euclid.modules.eag.EuclidEag.create_route`.
+    timeout: int = 0
     created: str = ""
     modified: str = ""
 
@@ -52,6 +55,7 @@ class Route:
             _json.text(document, "applicationId"), _json.text(document, "moduleTarget"),
             _json.text(document, "moduleAction"), _json.strings(document, "methods"),
             _json.text(document, "authentication"), _json.flag(document, "active", True),
+            _json.number(document, "timeout"),
             _json.text(document, "created"), _json.text(document, "modified"))
 
     @property

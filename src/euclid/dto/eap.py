@@ -16,7 +16,8 @@ from typing import Any
 from . import _json
 
 __all__ = ["Application", "Endpoint", "LogLevelResult", "Node", "NodeApplication",
-           "ListNodesResult", "NodeStateResult"]
+           "ListNodesResult", "NodeStateResult", "RebalanceResult", "Platform",
+           "EgressLimits", "EgressSite", "EgressSitesResult", "EgressSiteRemoved"]
 
 
 @dataclass
@@ -89,6 +90,13 @@ class Application:
     min_instances: int = 0
     max_instances: int = 0
     ready_timeout_ms: int = 0
+    #: How much memory an instance may use, in MiB; zero when it is not capped. Enforced with
+    #: cgroups, so an instance that asks for more is killed rather than allowed to take the host
+    #: down with it - see :meth:`~euclid.modules.eap.EuclidEap.set_application_limits`.
+    memory_limit_mb: int = 0
+    #: How many CPUs an instance may use, as a fraction - ``1.5`` is one and a half. Zero when
+    #: uncapped. A cap here throttles rather than kills: an instance over it runs slowly.
+    cpu_limit: float = 0.0
     #: :data:`~euclid.modules.eap.PROCESS` or :data:`~euclid.modules.eap.JOB` - what this
     #: application is, as opposed to what it is written in. A job is not restarted when it exits 0
     #: and is not autoscaled; a process is held at its instance count.
@@ -128,6 +136,7 @@ class Application:
             _json.strings(document, "resources"), _json.text(document, "userId"),
             _json.text(document, "logLevel"), _json.number(document, "minInstances"),
             _json.number(document, "maxInstances"), _json.number(document, "readyTimeoutMs"),
+            _json.number(document, "memoryLimitMb"), _json.real(document, "cpuLimit"),
             _json.text(document, "type"), _json.text(document, "schedule"),
             _json.text(document, "nextRunAt"),
             _json.text(document, "desiredState"), _json.text(document, "state"),
@@ -340,3 +349,127 @@ class NodeStateResult:
     def from_json(document: Any) -> "NodeStateResult":
         return NodeStateResult(_json.text(document, "node"), _json.flag(document, "drained"),
                                _json.flag(document, "deleted"))
+
+
+@dataclass
+class RebalanceResult:
+    """What a rebalance request came to.
+
+    ``rebalancing`` says the request was recorded, not that anything has moved: the manager places
+    the instances again on its next reconcile. ``instances`` is the size of the pool about to be
+    moved rather than what has been.
+    """
+
+    application_id: str = ""
+    rebalancing: bool = False
+    instances: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "RebalanceResult":
+        return RebalanceResult(_json.text(document, "applicationId"),
+                               _json.flag(document, "rebalancing"),
+                               _json.number(document, "instances"))
+
+
+@dataclass
+class Platform:
+    """A stored infrastructure declaration covering a whole namespace, and what it owns.
+
+    Where an application's declaration says what that application needs, a platform's says what the
+    namespace has - the queues, topics and buckets several applications share. ``owns`` is the ERNs
+    the declaration is answerable for, which is what a later apply compares against: a resource it
+    owns and no longer names is removed.
+
+    ``declaration`` is the document as stored, parsed. It is ``None`` when the stored text could
+    not be read back, which is a stored declaration that would not apply rather than an empty one.
+    """
+
+    name: str = ""
+    namespace: str = ""
+    owns: list[str] = field(default_factory=list)
+    declaration: Any = None
+    modified: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "Platform":
+        held = document.get("declaration") if isinstance(document, dict) else None
+        return Platform(_json.text(document, "name"), _json.text(document, "namespace"),
+                        _json.strings(document, "owns"), held,
+                        _json.text(document, "modified"))
+
+
+@dataclass
+class EgressLimits:
+    """How fast an application may call out to one site.
+
+    Three numbers because they bound different things: ``requests_per_second`` is the sustained
+    rate, ``burst`` how far above it a short spike may go, and ``concurrent`` how many calls may be
+    in flight at once. A slow site needs the last one even when the rate is modest.
+
+    Zero at any of the three means that aspect is not bounded.
+    """
+
+    requests_per_second: int = 0
+    burst: int = 0
+    concurrent: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "EgressLimits":
+        return EgressLimits(_json.number(document, "requestsPerSecond"),
+                            _json.number(document, "burst"),
+                            _json.number(document, "concurrent"))
+
+
+@dataclass
+class EgressSite:
+    """One site an application calls out to, and the limits it is held to there.
+
+    ``limits_set`` is what separates a site with limits of its own from one running under the
+    default: the numbers read the same either way, and only this says whether anybody chose them.
+    """
+
+    application_id: str = ""
+    #: A host name, or ``*`` for every site the application calls.
+    site: str = ""
+    limits: EgressLimits = field(default_factory=EgressLimits)
+    #: Whether a limit was set for this site rather than inherited.
+    limits_set: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "EgressSite":
+        held = document.get("limits") if isinstance(document, dict) else None
+        return EgressSite(_json.text(document, "applicationId"), _json.text(document, "site"),
+                          EgressLimits.from_json(held), _json.flag(document, "limitsSet"))
+
+
+@dataclass
+class EgressSitesResult:
+    """The sites applications call out to, and what an unlimited one is held to.
+
+    ``default_limits`` is why this is a result rather than a bare list: a site whose
+    :attr:`EgressSite.limits_set` is false reads back the default's numbers, and only this says
+    what they are installation-wide. Change the default and every such site moves with it.
+    """
+
+    default_limits: EgressLimits = field(default_factory=EgressLimits)
+    sites: list[EgressSite] = field(default_factory=list)
+
+    @staticmethod
+    def from_json(document: Any) -> "EgressSitesResult":
+        held = document.get("defaultLimits") if isinstance(document, dict) else None
+        return EgressSitesResult(EgressLimits.from_json(held),
+                                 [EgressSite.from_json(s) for s in _json.documents(document, "sites")])
+
+
+@dataclass
+class EgressSiteRemoved:
+    """A site an application is no longer tracked against."""
+
+    application_id: str = ""
+    site: str = ""
+    removed: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "EgressSiteRemoved":
+        return EgressSiteRemoved(_json.text(document, "applicationId"), _json.text(document, "site"),
+                                 _json.flag(document, "removed"))

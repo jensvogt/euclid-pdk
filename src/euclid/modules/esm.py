@@ -30,12 +30,15 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ..dto.com import Variant
-from ..dto.esm import (AbortUploadResult, Bucket, BucketEvent, CreateBucketResult, CreateDownloadResult, CreateUploadResult,
-                       DeleteBucketResult, DeleteObjectsResult, DisableEncryptionResult, EnableEncryptionResult,
-                       EsmObject,
-                       ListBucketsResult, ListObjectsResult, ObjectAttribute, PurgeBucketResult,
-                       RenameBucketResult, SetBucketInternalResult, SetBucketPriorityResult, StoredObject, SubscribeResult,
-                       Subscription, TouchObjectResult)
+from ..dto.esm import (AbortUploadResult, Bucket, BucketEvent, BucketLifecycleResult,
+                       BucketStoppedResult, BucketVersioningResult, CreateBucketResult,
+                       CreateDownloadResult, CreateUploadResult, DeleteBucketResult,
+                       DeleteObjectsResult, DisableEncryptionResult, EnableEncryptionResult,
+                       EsmObject, LifecycleRule, ListBucketsResult, ListObjectsResult,
+                       ListObjectVersionsResult, ObjectAttribute, ObjectLifecycleResult,
+                       PurgeBucketResult, RenameBucketResult, SetBucketInternalResult,
+                       SetBucketPriorityResult, StoredObject, SubscribeResult, Subscription,
+                       TouchObjectResult, VerifyObjectsResult)
 from ..exceptions import EuclidServiceError
 from ..http.client import Response
 from .base import ModuleClient
@@ -313,6 +316,172 @@ class EuclidEsm(ModuleClient):
     def delete_bucket_tag(self, bucket_ern: str, key: str) -> None:
         """Removes a tag from a bucket."""
         self._call("delete-bucket-tag", {"ern": bucket_ern, "key": key})
+
+    def stop_bucket(self, bucket_ern: str) -> BucketStoppedResult:
+        """Stops a bucket accepting writes, without stopping it being read.
+
+        What it already holds stays readable and downloadable; what is refused is a write. For
+        taking a bucket out of use before deleting it, or holding a producer off while something
+        downstream is repaired - a refusal is a producer that retries, where a deleted bucket is a
+        producer that fails for good.
+        """
+        return BucketStoppedResult.from_json(self._call("stop-bucket", {"ern": bucket_ern}))
+
+    def start_bucket(self, bucket_ern: str) -> BucketStoppedResult:
+        """Lets a bucket accept writes again."""
+        return BucketStoppedResult.from_json(self._call("start-bucket", {"ern": bucket_ern}))
+
+    def set_bucket_versioning(self, bucket_ern: str, enabled: bool = True) -> BucketVersioningResult:
+        """Makes an overwrite keep the version it replaced, rather than replacing it.
+
+        Off until it is turned on, which is how buckets have always behaved: writing a key that
+        exists overwrites it and the bytes that were there are gone. With this on, the old version
+        is kept and :meth:`list_object_versions` is what reads them back.
+
+        Applies to writes from here on. Turning it on does not recover a version overwritten
+        before, and turning it off does not delete the versions already kept - what it stops is new
+        ones being made.
+        """
+        return BucketVersioningResult.from_json(self._call("set-bucket-versioning", {
+            "ern": bucket_ern, "enabled": enabled}))
+
+    def list_object_versions(self, bucket_ern: str, key: str) -> ListObjectVersionsResult:
+        """Every version stored under one key, newest first.
+
+        The result's ``versioning`` is the bucket's setting rather than the key's, and it is what
+        explains a single version coming back: a bucket that never kept them has one per key
+        whatever its history.
+        """
+        return ListObjectVersionsResult.from_json(self._call("list-object-versions", {
+            "bucketErn": bucket_ern, "key": key}))
+
+    def set_bucket_lifecycle(self, bucket_ern: str,
+                             rules: Iterable[LifecycleRule]) -> BucketLifecycleResult:
+        """Replaces a bucket's lifecycle rules, which say when its objects are archived.
+
+        Replaces rather than merges: a rule left out is taken away, which is the only way to remove
+        one short of :meth:`delete_bucket_lifecycle`. Read them with
+        :meth:`get_bucket_lifecycle` first if the intent is to add one.
+
+        Where several rules match a key the longest prefix wins, so a general rule can be given an
+        exception without being rewritten. The server refuses a duplicate rule id, a malformed
+        rule, and any rule at all on one of euclid's own internal buckets - those are read straight
+        off the disk by the modules that use them, which know nothing of an archive.
+
+        :raises ValueError: if a rule has no id. The ids are how a rule is identified in an answer,
+            and two rules with none cannot be told apart.
+        """
+        entries = [rule.to_json() for rule in rules]
+        if any(not entry["id"] for entry in entries):
+            raise ValueError("every lifecycle rule needs an id")
+        return BucketLifecycleResult.from_json(self._call("set-bucket-lifecycle", {
+            "ern": bucket_ern, "rules": entries}))
+
+    def get_bucket_lifecycle(self, bucket_ern: str) -> BucketLifecycleResult:
+        """A bucket's lifecycle rules. Empty on a bucket that has none."""
+        return BucketLifecycleResult.from_json(self._call("get-bucket-lifecycle", {"ern": bucket_ern}))
+
+    def delete_bucket_lifecycle(self, bucket_ern: str) -> BucketLifecycleResult:
+        """Removes every lifecycle rule from a bucket, leaving its objects where they are.
+
+        Objects already archived stay archived: the rules say what the sweep does from here on, not
+        where the bytes currently live. :meth:`restore_object` is what brings one back.
+        """
+        return BucketLifecycleResult.from_json(self._call("delete-bucket-lifecycle",
+                                                          {"ern": bucket_ern}))
+
+    # -- an object's bytes, and where they live ----------------------------------------------
+
+    def archive_object(self, ern: str = "", bucket_ern: str = "", key: str = "",
+                       days: int = 0) -> ObjectLifecycleResult:
+        """Moves one object's bytes to the archive, on demand.
+
+        What a lifecycle rule does on a schedule, done now - for an object known to be cold before
+        any rule would have said so. The row stays where it is and the object keeps its key; what
+        moves is the bytes, so a read has to wait for :meth:`restore_object`.
+
+        Name the object either by its own ``ern``, or by ``bucket_ern`` and ``key``. The server
+        refuses both-or-neither, and refuses an object in one of euclid's own internal buckets.
+
+        :param days: how long a later restore should keep it readable, 0 to 36500. Zero leaves it
+            to whatever the matching lifecycle rule says.
+        :raises ValueError: if the object is not named, or ``days`` is outside that range.
+        """
+        return ObjectLifecycleResult.from_json(
+            self._call("archive-object", self._object_lifecycle_payload(ern, bucket_ern, key, days)))
+
+    def restore_object(self, ern: str = "", bucket_ern: str = "", key: str = "",
+                       days: int = 0) -> ObjectLifecycleResult:
+        """Brings an archived object's bytes back, for a while.
+
+        **A restore is temporary.** The result's ``restored_until`` is when it expires, and the
+        object goes back to the archive then - so a reader that needs it for longer asks for more
+        days rather than assuming the first restore holds.
+
+        :param days: how long to keep it readable, 0 to 36500. Zero follows the matching lifecycle
+            rule's ``restore_days``.
+        :raises ValueError: if the object is not named, or ``days`` is outside that range.
+        """
+        return ObjectLifecycleResult.from_json(
+            self._call("restore-object", self._object_lifecycle_payload(ern, bucket_ern, key, days)))
+
+    @staticmethod
+    def _object_lifecycle_payload(ern: str, bucket_ern: str, key: str, days: int) -> dict[str, Any]:
+        """One object, named either way, with the window a restore gets.
+
+        The either-or is checked here rather than left to the server, because naming an object two
+        ways at once is a mistake in the calling code and the round trip adds nothing to finding it.
+        """
+        if bool(ern) == bool(bucket_ern and key):
+            raise ValueError("name the object either by ern, or by bucket_ern and key")
+        if not 0 <= days <= 36500:
+            raise ValueError("days must be between 0 and 36500")
+        payload: dict[str, Any] = {"ern": ern} if ern else {"bucketErn": bucket_ern, "key": key}
+        if days:
+            payload["days"] = days
+        return payload
+
+    def get_object_size(self, ern: str = "", bucket_ern: str = "", key: str = "") -> int:
+        """How many bytes one object holds, without fetching it.
+
+        Name it either by its own ``ern``, or by ``bucket_ern`` and ``key``. The server refuses an
+        archived object with HTTP 409 rather than answering: the size it could give is the row's,
+        and a caller sizing up a download wants to know the bytes are not there to be downloaded.
+
+        :raises ValueError: if the object is not named either way.
+        """
+        if bool(ern) == bool(bucket_ern and key):
+            raise ValueError("name the object either by ern, or by bucket_ern and key")
+        payload = {"ern": ern} if ern else {"bucketErn": bucket_ern, "key": key}
+        return self._number("get-object-size", payload, "size")
+
+    def verify_objects(self, bucket_ern: str, after_key: str = "",
+                       limit: int = 1000) -> VerifyObjectsResult:
+        """Checks that a page of a bucket's objects still have the bytes their rows describe.
+
+        One page, deliberately: the check opens a file per object, so walking a large bucket is
+        paid for a page at a time rather than in one request that times out. The result's
+        ``next_key`` is where the next call starts, and an empty one means the bucket has been
+        walked to the end::
+
+            after = ""
+            while True:
+                page = esm.verify_objects(bucket_ern, after_key=after)
+                report(page.problems)
+                if not page.next_key:
+                    break
+                after = page.next_key
+
+        ``skipped`` is not a failure: an archived object has no file where one is expected, which is
+        exactly where its bytes are supposed to be.
+
+        :param limit: objects per page, 1 to 100000.
+        :raises ValueError: if the limit is outside that range, which the server refuses anyway.
+        """
+        if not 1 <= limit <= 100000:
+            raise ValueError("limit must be between 1 and 100000")
+        return VerifyObjectsResult.from_json(self._call("verify-objects", {
+            "bucketErn": bucket_ern, "afterKey": after_key, "limit": limit}))
 
     # -- objects -----------------------------------------------------------------------------
 

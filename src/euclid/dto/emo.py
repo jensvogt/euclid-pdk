@@ -30,6 +30,14 @@ __all__ = [
     "Metric",
     "MetricSample",
     "MetricQuery",
+    "VALUE", "MAX", "MIN",
+    "ABOVE", "BELOW",
+    "OK", "WARNING", "CRITICAL", "NODATA",
+    "MetricDescription",
+    "ListMetricsResult",
+    "AlertRule",
+    "Alert",
+    "AlertTransition",
 ]
 
 
@@ -44,6 +52,25 @@ RATE = "rate"
 #: The same two, as a listing spells them back.
 STORED_GAUGE = "GAUGE"
 STORED_RATE = "RATE"
+
+#: What of an interval an alert rule compares: the rolled-up value itself...
+VALUE = "VALUE"
+#: ...or the worst or best sample inside it, which is what catches a spike a mean hides.
+MAX = "MAX"
+MIN = "MIN"
+
+#: Which side of its threshold a rule fires on.
+ABOVE = "ABOVE"
+BELOW = "BELOW"
+
+#: What an alert's ``state`` reads as: inside its thresholds...
+OK = "OK"
+#: ...past the warning one, past the critical one...
+WARNING = "WARNING"
+CRITICAL = "CRITICAL"
+#: ...or reporting nothing at all for longer than the rule allows. Not the same as calm: a series
+#: that stopped arriving is a series nobody is watching.
+NODATA = "NODATA"
 
 #: How coarse the rows a listing reads are: as they were pushed...
 RAW = "RAW"
@@ -168,3 +195,198 @@ class MetricQuery:
         if self.resolution:
             document["resolution"] = self.resolution
         return document
+
+
+# -- the catalogue -------------------------------------------------------------------------------
+
+
+@dataclass
+class MetricDescription:
+    """One series the installation has seen, and what it looks like.
+
+    The catalogue rather than the data: this says a series exists, what type it is rolled up as,
+    and which labels split it - which is what somebody writing an alert rule needs before they can
+    name a threshold.
+    """
+
+    name: str = ""
+    #: :data:`STORED_GAUGE` or :data:`STORED_RATE`.
+    type: str = ""
+    #: How many distinct label combinations have been seen under this name.
+    series: int = 0
+    #: The label keys, not their values. A name rather than a cardinality explosion.
+    label_names: list[str] = field(default_factory=list)
+    last_seen: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "MetricDescription":
+        return MetricDescription(
+            _json.text(document, "name"), _json.text(document, "type"),
+            _json.number(document, "series"), _json.strings(document, "labelNames"),
+            _json.text(document, "lastSeen"))
+
+
+@dataclass
+class ListMetricsResult:
+    """The series the installation has seen, and how many there are in all."""
+
+    items: list[MetricDescription] = field(default_factory=list)
+    total: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "ListMetricsResult":
+        return ListMetricsResult(
+            [MetricDescription.from_json(m) for m in _json.documents(document, "items")],
+            _json.number(document, "total"))
+
+
+# -- alerting ------------------------------------------------------------------------------------
+
+
+@dataclass
+class AlertRule:
+    """A threshold on a series, and what has to happen before it fires.
+
+    ``warning`` and ``critical`` are both optional and a rule may carry either or both: a rule with
+    only a critical threshold is one nobody wants a warning about, and ``None`` is how "no
+    threshold at this level" is said rather than a sentinel number.
+
+    The three period counts are what keep a single bad sample from paging somebody.
+    ``for_periods`` is how many consecutive intervals have to breach before the alert fires,
+    ``clear_periods`` how many have to be clean before it clears, and
+    ``no_data_after_periods`` how many empty intervals read as ``NODATA`` rather than as calm -
+    zero meaning a series that stops reporting is simply quiet.
+    """
+
+    rule_id: str = ""
+    name: str = ""
+    #: The label combination this rule watches. Empty watches the series however it is split.
+    labels: dict[str, str] = field(default_factory=dict)
+    #: :data:`RAW`, :data:`HOUR` or :data:`DAY` - which rows the rule reads.
+    resolution: str = ""
+    #: :data:`VALUE`, :data:`MAX` or :data:`MIN` - what of each interval is compared.
+    statistic: str = ""
+    #: :data:`ABOVE` or :data:`BELOW`.
+    comparison: str = ""
+    warning: float | None = None
+    critical: float | None = None
+    for_periods: int = 1
+    clear_periods: int = 1
+    no_data_after_periods: int = 0
+    #: A rule that is off is kept and not evaluated, which is how one is suspended rather than lost.
+    enabled: bool = True
+    description: str = ""
+    account_id: str = ""
+    namespace: str = ""
+    created: str = ""
+    modified: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "AlertRule":
+        return AlertRule(
+            _json.text(document, "ruleId"), _json.text(document, "name"),
+            _json.string_map(document, "labels"), _json.text(document, "resolution"),
+            _json.text(document, "statistic"), _json.text(document, "comparison"),
+            _threshold(document, "warning"), _threshold(document, "critical"),
+            _json.number(document, "forPeriods"), _json.number(document, "clearPeriods"),
+            _json.number(document, "noDataAfterPeriods"), _json.flag(document, "enabled", True),
+            _json.text(document, "description"), _json.text(document, "accountId"),
+            _json.text(document, "namespace"), _json.text(document, "created"),
+            _json.text(document, "modified"))
+
+
+def _threshold(document: Any, name: str) -> float | None:
+    """A threshold that may not be set at all.
+
+    ``None`` rather than zero, because zero is a threshold somebody may well mean - a queue that
+    should never be empty, a rate that should never drop to nothing.
+    """
+    if not isinstance(document, dict):
+        return None
+    value = document.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+@dataclass
+class Alert:
+    """One label combination of one rule, and where it currently stands.
+
+    ``since`` is when it entered this state, which is what says whether a critical alert is new or
+    has been firing all week. The rule's own thresholds are repeated here so that a reading can be
+    judged without fetching the rule it came from.
+    """
+
+    rule_id: str = ""
+    name: str = ""
+    labels: dict[str, str] = field(default_factory=dict)
+    #: :data:`OK`, :data:`WARNING`, :data:`CRITICAL` or :data:`NODATA`.
+    state: str = ""
+    #: The server's own word for how bad that is, for sorting a list by it.
+    severity: int = 0
+    since: str = ""
+    #: What the series last read.
+    value: float = 0.0
+    last_seen: str = ""
+    statistic: str = ""
+    comparison: str = ""
+    warning: float | None = None
+    critical: float | None = None
+    description: str = ""
+    namespace: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "Alert":
+        return Alert(
+            _json.text(document, "ruleId"), _json.text(document, "name"),
+            _json.string_map(document, "labels"), _json.text(document, "state"),
+            _json.number(document, "severity"), _json.text(document, "since"),
+            _json.real(document, "value"), _json.text(document, "lastSeen"),
+            _json.text(document, "statistic"), _json.text(document, "comparison"),
+            _threshold(document, "warning"), _threshold(document, "critical"),
+            _json.text(document, "description"), _json.text(document, "namespace"))
+
+    @property
+    def is_firing(self) -> bool:
+        """Whether this is anything other than fine. ``NODATA`` counts: a series that stopped
+        reporting is not a series that is healthy."""
+        return self.state not in ("", OK)
+
+
+@dataclass
+class AlertTransition:
+    """One time an alert changed state, as the history recorded it.
+
+    ``previous`` and ``state`` together are the event - ``OK`` to ``CRITICAL`` is a page, and
+    ``CRITICAL`` to ``OK`` is the all-clear - and ``reason`` is the server's own account of what
+    decided it.
+    """
+
+    rule_id: str = ""
+    name: str = ""
+    labels: dict[str, str] = field(default_factory=dict)
+    #: What it was before.
+    previous: str = ""
+    #: What it became.
+    state: str = ""
+    severity: int = 0
+    value: float = 0.0
+    #: The threshold that was crossed, where one was.
+    threshold: float | None = None
+    statistic: str = ""
+    reason: str = ""
+    timestamp: str = ""
+    account_id: str = ""
+    namespace: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "AlertTransition":
+        return AlertTransition(
+            _json.text(document, "ruleId"), _json.text(document, "name"),
+            _json.string_map(document, "labels"), _json.text(document, "previous"),
+            _json.text(document, "state"), _json.number(document, "severity"),
+            _json.real(document, "value"), _threshold(document, "threshold"),
+            _json.text(document, "statistic"), _json.text(document, "reason"),
+            _json.text(document, "timestamp"), _json.text(document, "accountId"),
+            _json.text(document, "namespace"))

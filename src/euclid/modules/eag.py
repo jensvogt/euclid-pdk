@@ -28,9 +28,19 @@ from typing import Any, Iterable
 from ..dto.eag import ListListenersResult, Route
 from .base import ModuleClient
 
-__all__ = ["EuclidEag", "TARGET", "NO_AUTH", "EUCLID_AUTH", "BASIC_AUTH", "HTTP", "HTTPS"]
+__all__ = ["EuclidEag", "TARGET", "NO_AUTH", "EUCLID_AUTH", "BASIC_AUTH", "HTTP", "HTTPS",
+           "MAX_ROUTE_TIMEOUT", "GATEWAY_DEFAULT_TIMEOUT"]
 
 TARGET = "eag"
+
+#: The longest a route may wait for its target, in seconds - one hour. Past that a request is a job
+#: rather than a request: it ties up a connection to the caller and one to the instance for the
+#: whole of it, and is better started asynchronously and polled for.
+MAX_ROUTE_TIMEOUT = 3600
+
+#: What a route's timeout of zero means - the gateway's own configured default, followed as that
+#: changes rather than frozen at whatever it says today.
+GATEWAY_DEFAULT_TIMEOUT = 0
 
 #: Proxied as it arrives: whatever the application requires, it enforces itself.
 NO_AUTH = "NONE"
@@ -61,7 +71,8 @@ class EuclidEag(ModuleClient):
     def create_route(self, route_id: str, path: str, application_id: str = "",
                      module_target: str = "", module_action: str = "",
                      methods: Iterable[str] = (), authentication: str = NO_AUTH,
-                     active: bool = True, namespace: str = "", region: str = "") -> Route:
+                     active: bool = True, namespace: str = "", region: str = "",
+                     timeout: int = GATEWAY_DEFAULT_TIMEOUT) -> Route:
         """Publishes a path, and sends everything beneath it to an application or to a module.
 
         Refused with HTTP 409 if the route ID is taken, or if another route already answers for this
@@ -72,6 +83,11 @@ class EuclidEag(ModuleClient):
         :param route_id: the name to manage this route under, unique within the account and the
             namespace it is published in - two namespaces may each have an "orders" route.
         :param path: the path prefix to publish, which has to start with ``/``.
+        :param timeout: how long to wait for this route's target, in seconds, up to
+            :data:`MAX_ROUTE_TIMEOUT`. :data:`GATEWAY_DEFAULT_TIMEOUT` follows the gateway's own
+            setting as that changes. The server refuses a value out of range rather than clamping
+            it - a route cut off sooner than its author was told is worse than a refused create.
+        :raises ValueError: if the timeout is outside that range.
         :param application_id: the application requests are sent to, which has to exist already.
         :param module_target: the euclid module to reach instead, e.g. ``"eam"`` - see
             :meth:`create_module_route`, which is this with the pair spelled out.
@@ -89,6 +105,9 @@ class EuclidEag(ModuleClient):
         """
         if bool(application_id) == bool(module_target):
             raise ValueError("name either an application_id or a module_target, not both and not neither")
+        if not 0 <= timeout <= MAX_ROUTE_TIMEOUT:
+            raise ValueError(f"timeout must be between 0 and {MAX_ROUTE_TIMEOUT} seconds, "
+                             "0 being the gateway's default")
         if module_target and not module_action:
             raise ValueError("module_action is required when a module_target is named")
 
@@ -106,11 +125,14 @@ class EuclidEag(ModuleClient):
             payload["namespace"] = namespace
         if region:
             payload["region"] = region
+        if timeout:
+            payload["timeout"] = timeout
         return Route.from_json(self._call("create-route", payload))
 
     def create_module_route(self, route_id: str, path: str, module_target: str, module_action: str,
                             methods: Iterable[str] = (), authentication: str = NO_AUTH,
-                            active: bool = True, namespace: str = "", region: str = "") -> Route:
+                            active: bool = True, namespace: str = "", region: str = "",
+                            timeout: int = GATEWAY_DEFAULT_TIMEOUT) -> Route:
         """Publishes a path that reaches one action of a euclid module rather than an application.
 
         The same call as :meth:`create_route` with the module pair required rather than optional,
@@ -120,20 +142,26 @@ class EuclidEag(ModuleClient):
         return self.create_route(route_id, path, module_target=module_target,
                                  module_action=module_action, methods=methods,
                                  authentication=authentication, active=active,
-                                 namespace=namespace, region=region)
+                                 namespace=namespace, region=region, timeout=timeout)
 
     def update_route(self, route_id: str, path: str | None = None, application_id: str | None = None,
                      module_target: str | None = None, module_action: str | None = None,
                      methods: Iterable[str] | None = None, authentication: str | None = None,
                      active: bool | None = None, namespace: str | None = None,
-                     region: str | None = None) -> Route:
+                     region: str | None = None, timeout: int | None = None) -> Route:
         """Changes a route that already exists. Only what this names changes.
 
         The distinction the server draws is between a field being sent and not being sent, rather
         than between its values - so leaving ``path`` as None leaves the stored path alone. Moving a
         route to an application clears its module target and the other way round, since leaving both
         set would make which one wins depend on the proxy.
+
+        ``timeout`` is sent even as zero, because there zero is the instruction to go back to the
+        gateway's default rather than "nothing to say".
         """
+        if timeout is not None and not 0 <= timeout <= MAX_ROUTE_TIMEOUT:
+            raise ValueError(f"timeout must be between 0 and {MAX_ROUTE_TIMEOUT} seconds, "
+                             "0 being the gateway's default")
         payload: dict[str, Any] = {"routeId": route_id}
         if path is not None:
             payload["path"] = path
@@ -153,6 +181,8 @@ class EuclidEag(ModuleClient):
             payload["namespace"] = namespace
         if region is not None:
             payload["region"] = region
+        if timeout is not None:
+            payload["timeout"] = timeout
         return Route.from_json(self._call("update-route", payload))
 
     def set_route_active(self, route_id: str, active: bool) -> Route:

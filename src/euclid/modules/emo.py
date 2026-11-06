@@ -34,7 +34,8 @@ import threading
 import time
 from typing import Any, Callable, Iterable, Mapping
 
-from ..dto.emo import Metric, MetricQuery, MetricSample
+from ..dto.emo import (Alert, AlertRule, AlertTransition, ListMetricsResult, Metric, MetricQuery,
+                       MetricSample)
 from .base import ModuleClient
 
 __all__ = ["EuclidEmo", "TARGET", "DEFAULT_STEP", "Counter", "Gauge", "Timer", "MeterRegistry"]
@@ -90,6 +91,119 @@ class EuclidEmo(ModuleClient):
         """
         value = self._call("average", (query or MetricQuery()).to_json()).get("average")
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+    def describe_metrics(self, prefix: str = "", hours: int = 24) -> ListMetricsResult:
+        """The series the installation has seen, with their type and label keys.
+
+        The catalogue rather than the data: what exists, how it is rolled up, and which labels
+        split it - which is what somebody writing an alert rule needs before it can name a
+        threshold. This is to :meth:`list_metrics` what a schema is to a table.
+
+        Sent as ``list-metrics``, and named ``describe_`` here only because :meth:`list_metrics`
+        was already taken - by the ``list`` action, which reads the rows themselves. The two are
+        genuinely different questions, and the server's two names are one letter apart.
+
+        :param prefix: only the names starting with this.
+        :param hours: how far back to look for a series, at least 1. A name nothing has reported
+            inside the window is not listed, so this is also how a catalogue is kept to what is
+            live rather than to everything ever pushed.
+        :raises ValueError: if ``hours`` is less than one, which the server refuses anyway.
+
+        Administrator-only, server-side, as the other reads here are.
+        """
+        if hours < 1:
+            raise ValueError("hours must be at least 1")
+        return ListMetricsResult.from_json(self._call("list-metrics", {
+            "prefix": prefix, "hours": hours}))
+
+    # -- alerting ----------------------------------------------------------------------------
+
+    def create_alert_rule(self, rule: AlertRule) -> AlertRule:
+        """Creates an alert rule: a threshold on a series, and what has to happen before it fires.
+
+        :raises ValueError: if the rule has no id or name, or sets neither threshold. A rule with
+            no threshold at either level can never fire, which is a mistake rather than a
+            configuration - :attr:`~euclid.dto.emo.AlertRule.enabled` is how a rule is turned off.
+
+        Refused with HTTP 409 if a rule of that id already exists; the server also refuses a
+        statistic, comparison or resolution it does not recognise rather than quietly defaulting
+        one, since a rule that watches the wrong thing is worse than no rule.
+        """
+        return AlertRule.from_json(self._call("create-alert-rule",
+                                              self._rule_payload(rule, creating=True)))
+
+    def update_alert_rule(self, rule: AlertRule) -> AlertRule:
+        """Changes an alert rule, by the ``rule_id`` on the rule given.
+
+        Every field the rule carries is sent, so this replaces rather than merges: read it with
+        :meth:`list_alert_rules` and change what you want, rather than building one from scratch.
+        """
+        return AlertRule.from_json(self._call("update-alert-rule",
+                                              self._rule_payload(rule, creating=False)))
+
+    @staticmethod
+    def _rule_payload(rule: AlertRule, creating: bool) -> dict[str, Any]:
+        """A rule as the server reads it, with the thresholds left out when they are not set.
+
+        ``None`` is not sent as null: the server reads an absent threshold as "no threshold at this
+        level", and a null would be a number it cannot parse.
+        """
+        if not rule.rule_id:
+            raise ValueError("an alert rule needs a rule_id")
+        if creating and not rule.name:
+            raise ValueError("an alert rule needs the name of the series it watches")
+        if rule.warning is None and rule.critical is None:
+            raise ValueError("an alert rule with no warning and no critical threshold can never "
+                             "fire; set one, or use enabled=False to suspend a rule")
+        payload: dict[str, Any] = {
+            "ruleId": rule.rule_id, "name": rule.name, "labels": dict(rule.labels),
+            "forPeriods": rule.for_periods, "clearPeriods": rule.clear_periods,
+            "noDataAfterPeriods": rule.no_data_after_periods, "enabled": rule.enabled,
+            "description": rule.description}
+        if rule.resolution:
+            payload["resolution"] = rule.resolution
+        if rule.statistic:
+            payload["statistic"] = rule.statistic
+        if rule.comparison:
+            payload["comparison"] = rule.comparison
+        if rule.warning is not None:
+            payload["warning"] = rule.warning
+        if rule.critical is not None:
+            payload["critical"] = rule.critical
+        return payload
+
+    def delete_alert_rule(self, rule_id: str) -> None:
+        """Deletes an alert rule, and with it whatever state it was holding."""
+        self._call("delete-alert-rule", {"ruleId": rule_id})
+
+    def list_alert_rules(self) -> list[AlertRule]:
+        """Every alert rule in the account."""
+        items = self._call("list-alert-rules", {}).get("items")
+        return [AlertRule.from_json(r) for r in items] if isinstance(items, list) else []
+
+    def list_alerts(self, active_only: bool = False) -> list[Alert]:
+        """Where each of the watched label combinations currently stands.
+
+        One entry per label combination per rule, not per rule: a rule watching a series split by
+        host has an entry per host, which is the granularity an alert actually fires at.
+
+        :param active_only: only what is not ``OK``. The default lists everything, which is what
+            says a rule is being evaluated at all rather than silently matching nothing.
+        """
+        items = self._call("list-alerts", {"active": active_only}).get("items")
+        return [Alert.from_json(a) for a in items] if isinstance(items, list) else []
+
+    def list_alert_history(self, limit: int = 100) -> list[AlertTransition]:
+        """The state changes alerts have been through, newest first.
+
+        The transitions rather than the states: ``OK`` to ``CRITICAL`` is a page and the reverse is
+        the all-clear, and this is where "how long was it broken" is answered after the fact -
+        :meth:`list_alerts` only knows about now.
+        """
+        items = self._call("list-alert-history", {"limit": limit}).get("items")
+        return [AlertTransition.from_json(t) for t in items] if isinstance(items, list) else []
+
+    # -- the meter registry ------------------------------------------------------------------
 
     def registry(self, module: str, step: float = DEFAULT_STEP,
                  common_labels: Mapping[str, str] | None = None,

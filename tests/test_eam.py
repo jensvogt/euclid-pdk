@@ -771,3 +771,37 @@ def test_a_rename_the_server_cannot_carry_through_is_refused_whole(gateway):
             session.change_userid("jens", "alice")
 
     assert raised.value.status == 409
+
+
+def test_changing_an_email_checks_its_shape_server_side(gateway):
+    """A sanity check rather than verification: nothing is sent to the address, so a well-formed
+    one nobody reads is accepted."""
+    prepared(gateway)
+    gateway.answer("eam", "change-email", {"user": {
+        "userId": "jens", "email": "jens.vogt@example.com", "accountId": "000000000000"}})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        updated = session.change_email("jens", "jens.vogt@example.com")
+
+    assert gateway.last().json() == {"userId": "jens", "email": "jens.vogt@example.com"}
+    assert updated.email == "jens.vogt@example.com"
+
+
+def test_listing_my_accounts_is_not_listing_every_account(gateway):
+    """The caller's own reachable set - their home account plus wherever a grant takes them -
+    rather than the installation's, which is list_accounts and administrator only."""
+    prepared(gateway)
+    gateway.answer("eam", "list-my-accounts", {"total": 2, "homeAccountId": "000000000000",
+                                               "accounts": [
+        {"accountId": "000000000000", "name": "acme", "description": "home"},
+        {"accountId": "111111111111"}]})
+
+    with Euclid.for_server(gateway.base_url).login("jens", "secret") as session:
+        result = session.list_my_accounts()
+
+    assert gateway.last().json() == {}
+    assert result.home_account_id == "000000000000"
+    assert [a.account_id for a in result.accounts] == ["000000000000", "111111111111"]
+    # An account a grant reaches but whose record the caller may not read carries its id and
+    # little else, which is deliberate rather than an error.
+    assert result.accounts[1].name == ""

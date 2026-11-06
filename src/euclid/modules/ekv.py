@@ -231,15 +231,49 @@ class EuclidEkv(ModuleClient):
             "sortValue": sort_value, "sortUpper": sort_upper, "forward": forward,
             "pageSize": page_size, "pageIndex": page_index}))
 
-    def scan(self, table: str, page_size: int = 0, page_index: int = 0) -> ScanResult:
+    def scan(self, table: str, page_size: int = 0, page_index: int = 0,
+             sort_column: str = "", sort_direction: str = "",
+             modified_from: str = "", modified_to: str = "",
+             attribute_name: str = "", attribute_operator: str = "",
+             attribute_value: Any = None) -> ScanResult:
         """Reads a table's items without regard to their key.
 
         This reads the table rather than an index: fine for a small table or an export, the wrong
         tool for a lookup - :meth:`query` is that. ``page_size`` of 0 means no limit, so a scan of
         a large table with no paging brings all of it back.
+
+        The filters narrow what comes back but not what is read: a scan walks the table whatever
+        they say, so they save bandwidth rather than work. Each is left out of the request when it
+        says nothing, since the server reads an absent one as "do not narrow by this".
+
+        :param sort_column: an attribute to order by, and ``sort_direction`` ``asc`` or ``desc``.
+            Ordering a scan is the server sorting what it read, not an index being used.
+        :param modified_from: ISO 8601; only items changed at or after it.
+        :param modified_to: likewise, at or before.
+        :param attribute_name: an attribute to test. Naming one without an operator tests it with
+            :data:`EQ`, which is the condition almost always meant.
+        :param attribute_operator: :data:`EQ`, :data:`LT`, :data:`LE`, :data:`GT`, :data:`GE` or
+            :data:`BEGINS_WITH` - the same vocabulary a sort condition uses, since the server
+            parses both the same way.
+        :param attribute_value: what to compare against, typed as the attribute is.
         """
-        return ScanResult.from_json(self._call("scan", {
-            "table": table, "pageSize": page_size, "pageIndex": page_index}))
+        payload: dict[str, Any] = {"table": table, "pageSize": page_size, "pageIndex": page_index}
+        # Left out when they say nothing: the server reads an absent filter as "do not narrow by
+        # this", and an empty attribute name with an operator beside it would be a condition on
+        # nothing.
+        if sort_column:
+            payload["sortColumn"] = sort_column
+        if sort_direction:
+            payload["sortDirection"] = sort_direction
+        if modified_from:
+            payload["modifiedFrom"] = modified_from
+        if modified_to:
+            payload["modifiedTo"] = modified_to
+        if attribute_name:
+            payload["attributeName"] = attribute_name
+            payload["attributeOperator"] = attribute_operator or EQ
+            payload["attributeValue"] = attribute_value
+        return ScanResult.from_json(self._call("scan", payload))
 
     # -- monitoring --------------------------------------------------------------------------
 

@@ -38,7 +38,22 @@ __all__ = [
     "StoredObject",
     "CreateUploadResult",
     "CreateDownloadResult",
+    "STANDARD", "ARCHIVED",
+    "LifecycleRule",
+    "BucketLifecycleResult",
+    "BucketVersioningResult",
+    "BucketStoppedResult",
+    "ObjectLifecycleResult",
+    "ObjectVersion",
+    "ListObjectVersionsResult",
+    "ObjectProblem",
+    "VerifyObjectsResult",
 ]
+
+#: What an object's ``lifecycle_state`` reads as: its bytes are where a read expects them...
+STANDARD = "STANDARD"
+#: ...or they have been moved to the archive and a read has to wait for a restore.
+ARCHIVED = "ARCHIVED"
 
 
 # -- resources -----------------------------------------------------------------------------------
@@ -64,6 +79,12 @@ class Bucket:
     #: the bucket depends on it - see
     #: :meth:`euclid.modules.esm.EuclidEsm.set_bucket_priority`.
     priority: str = ""
+    #: Whether the bucket is refusing writes - see
+    #: :meth:`euclid.modules.esm.EuclidEsm.stop_bucket`. What it already holds stays readable.
+    stopped: bool = False
+    #: Whether overwriting a key keeps the version it replaced - see
+    #: :meth:`euclid.modules.esm.EuclidEsm.set_bucket_versioning`.
+    versioning: bool = False
     created: str = ""
     modified: str = ""
 
@@ -74,7 +95,8 @@ class Bucket:
             _json.number(document, "size"), _json.number(document, "objects"),
             _json.string_map(document, "tags"), _json.flag(document, "encrypted"),
             _json.text(document, "encryptionKeyErn"), _json.flag(document, "internal"),
-            _json.text(document, "priority"),
+            _json.text(document, "priority"), _json.flag(document, "stopped"),
+            _json.flag(document, "versioning"),
             _json.text(document, "created"), _json.text(document, "modified"))
 
 
@@ -94,6 +116,11 @@ class EsmObject:
     content_type: str = ""
     md5_sum: str = ""
     encrypted: bool = False
+    #: Which version of the key this is, on a bucket that keeps them. Empty on one that does not.
+    version_id: str = ""
+    #: :data:`STANDARD` or :data:`ARCHIVED`. An archived object's bytes are not where a read
+    #: expects them - see :meth:`euclid.modules.esm.EuclidEsm.restore_object`.
+    lifecycle_state: str = ""
     attributes: dict[str, Variant] = field(default_factory=dict)
     created: str = ""
     modified: str = ""
@@ -105,7 +132,8 @@ class EsmObject:
             _json.text(document, "ern"), _json.text(document, "bucketErn"), _json.text(document, "key"),
             _json.number(document, "size"), _json.text(document, "status"),
             _json.text(document, "contentType"), _json.text(document, "md5Sum"),
-            _json.flag(document, "encrypted"), Variant.map_from_json(attributes),
+            _json.flag(document, "encrypted"), _json.text(document, "versionId"),
+            _json.text(document, "lifecycleState"), Variant.map_from_json(attributes),
             _json.text(document, "created"), _json.text(document, "modified"))
 
 
@@ -484,3 +512,228 @@ class CreateDownloadResult:
             _json.text(document, "downloadId"), _json.text(document, "bucketErn"),
             _json.text(document, "key"), _json.text(document, "ern"), _json.number(document, "size"),
             _json.text(document, "contentType"))
+
+
+# -- lifecycle, versioning and verification ------------------------------------------------------
+
+
+@dataclass
+class LifecycleRule:
+    """One rule saying when a bucket's objects are archived, and for how long a restore lasts.
+
+    ``prefix`` is what the rule applies to, and an empty one is the whole bucket. Where several
+    rules match a key the longest prefix wins, so a general rule can be given an exception without
+    rewriting it.
+    """
+
+    id: str = ""
+    prefix: str = ""
+    #: How old an object has to be before the sweep archives it. Zero archives nothing, which is
+    #: how a rule is written for its ``restore_days`` alone.
+    archive_after_days: int = 0
+    #: How long a restore keeps an object readable before it goes back to the archive.
+    restore_days: int = 0
+    #: A rule that is off is kept and not applied, which is how one is suspended rather than lost.
+    enabled: bool = True
+
+    @staticmethod
+    def from_json(document: Any) -> "LifecycleRule":
+        return LifecycleRule(
+            _json.text(document, "id"), _json.text(document, "prefix"),
+            _json.number(document, "archiveAfterDays"), _json.number(document, "restoreDays"),
+            _json.flag(document, "enabled", True))
+
+    def to_json(self) -> dict[str, Any]:
+        """This rule as the server reads it."""
+        return {"id": self.id, "prefix": self.prefix,
+                "archiveAfterDays": self.archive_after_days, "restoreDays": self.restore_days,
+                "enabled": self.enabled}
+
+
+@dataclass
+class BucketLifecycleResult:
+    """A bucket's lifecycle rules as they now stand. Empty after they are deleted."""
+
+    ern: str = ""
+    name: str = ""
+    rules: list[LifecycleRule] = field(default_factory=list)
+
+    @staticmethod
+    def from_json(document: Any) -> "BucketLifecycleResult":
+        return BucketLifecycleResult(
+            _json.text(document, "ern"), _json.text(document, "name"),
+            [LifecycleRule.from_json(r) for r in _json.documents(document, "rules")])
+
+
+@dataclass
+class BucketVersioningResult:
+    """Whether a bucket keeps the version an overwrite replaced."""
+
+    ern: str = ""
+    name: str = ""
+    versioning: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "BucketVersioningResult":
+        return BucketVersioningResult(_json.text(document, "ern"), _json.text(document, "name"),
+                                      _json.flag(document, "versioning"))
+
+
+@dataclass
+class BucketStoppedResult:
+    """Whether a bucket is refusing writes."""
+
+    ern: str = ""
+    name: str = ""
+    stopped: bool = False
+
+    @staticmethod
+    def from_json(document: Any) -> "BucketStoppedResult":
+        return BucketStoppedResult(_json.text(document, "ern"), _json.text(document, "name"),
+                                   _json.flag(document, "stopped"))
+
+
+@dataclass
+class ObjectLifecycleResult:
+    """Where one object's bytes are, and what the last archive or restore did to them.
+
+    ``restored_until`` is the half worth reading after a restore: a restore is temporary, and the
+    object goes back to the archive when it runs out.
+    """
+
+    ern: str = ""
+    bucket_ern: str = ""
+    key: str = ""
+    #: :data:`STANDARD` or :data:`ARCHIVED`.
+    lifecycle_state: str = ""
+    archived_at: str = ""
+    restored_at: str = ""
+    #: When a restore expires. Empty on an object that is not restored.
+    restored_until: str = ""
+    #: Where the archived copy lives. Empty while the object is in standard storage.
+    archive_file: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "ObjectLifecycleResult":
+        return ObjectLifecycleResult(
+            _json.text(document, "ern"), _json.text(document, "bucketErn"),
+            _json.text(document, "key"), _json.text(document, "lifecycleState"),
+            _json.text(document, "archivedAt"), _json.text(document, "restoredAt"),
+            _json.text(document, "restoredUntil"), _json.text(document, "archiveFile"))
+
+    @property
+    def is_archived(self) -> bool:
+        """Whether a read would have to wait for a restore."""
+        return self.lifecycle_state == ARCHIVED
+
+
+@dataclass
+class ObjectVersion:
+    """One stored version of a key."""
+
+    version_id: str = ""
+    #: Whether this is the version a plain read of the key returns.
+    latest: bool = False
+    size: int = 0
+    content_type: str = ""
+    status: str = ""
+    lifecycle_state: str = ""
+    owner: str = ""
+    modified: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "ObjectVersion":
+        return ObjectVersion(
+            _json.text(document, "versionId"), _json.flag(document, "latest"),
+            _json.number(document, "size"), _json.text(document, "contentType"),
+            _json.text(document, "status"), _json.text(document, "lifecycleState"),
+            _json.text(document, "owner"), _json.text(document, "modified"))
+
+
+@dataclass
+class ListObjectVersionsResult:
+    """Every version stored under one key, newest first.
+
+    ``versioning`` is the bucket's setting rather than this key's, and it is what explains a single
+    version: a bucket that never kept them has one per key whatever its history.
+    """
+
+    bucket_ern: str = ""
+    key: str = ""
+    ern: str = ""
+    versioning: bool = False
+    versions: list[ObjectVersion] = field(default_factory=list)
+    total: int = 0
+
+    @staticmethod
+    def from_json(document: Any) -> "ListObjectVersionsResult":
+        return ListObjectVersionsResult(
+            _json.text(document, "bucketErn"), _json.text(document, "key"),
+            _json.text(document, "ern"), _json.flag(document, "versioning"),
+            [ObjectVersion.from_json(v) for v in _json.documents(document, "versions")],
+            _json.number(document, "total"))
+
+
+@dataclass
+class ObjectProblem:
+    """One object whose stored bytes do not match what the row says about them.
+
+    ``problem`` is the server's own word for what is wrong - a file that is missing, or one whose
+    size disagrees with the row. The sizes are reported beside each other rather than reduced to a
+    verdict, because which of the two is right is not something the check can know.
+    """
+
+    key: str = ""
+    ern: str = ""
+    problem: str = ""
+    #: What the object row says the size is.
+    recorded_size: int = 0
+    #: What the file on disk actually is.
+    file_size: int = 0
+    #: What the file should be, which differs from ``recorded_size`` for an encrypted object.
+    expected_file_size: int = 0
+    internal_name: str = ""
+    internal_dir: str = ""
+    created: str = ""
+    #: Whatever more the server had to say. Sent only when there is something.
+    detail: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "ObjectProblem":
+        return ObjectProblem(
+            _json.text(document, "key"), _json.text(document, "ern"),
+            _json.text(document, "problem"), _json.number(document, "recordedSize"),
+            _json.number(document, "fileSize"), _json.number(document, "expectedFileSize"),
+            _json.text(document, "internalName"), _json.text(document, "internalDir"),
+            _json.text(document, "created"), _json.text(document, "detail"))
+
+
+@dataclass
+class VerifyObjectsResult:
+    """What one pass of a bucket's integrity check looked at, and what it found.
+
+    One page rather than the whole bucket: the check reads a file per object, so it is paged
+    deliberately and ``next_after_key`` is where the next pass starts. Empty means the end.
+
+    ``scanned`` is the rows read, ``checked`` the files actually opened, and ``skipped`` the ones
+    passed over - an archived object has no file where one is expected, which is not a problem.
+    """
+
+    bucket_ern: str = ""
+    after_key: str = ""
+    scanned: int = 0
+    checked: int = 0
+    skipped: int = 0
+    problems: list[ObjectProblem] = field(default_factory=list)
+    #: Where to resume - pass it back as ``after_key``. Empty when the page was short, which is the
+    #: end of the bucket.
+    next_key: str = ""
+
+    @staticmethod
+    def from_json(document: Any) -> "VerifyObjectsResult":
+        return VerifyObjectsResult(
+            _json.text(document, "bucketErn"), _json.text(document, "afterKey"),
+            _json.number(document, "scanned"), _json.number(document, "checked"),
+            _json.number(document, "skipped"),
+            [ObjectProblem.from_json(p) for p in _json.documents(document, "problems")],
+            _json.text(document, "nextKey"))

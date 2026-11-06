@@ -15,6 +15,7 @@ import pytest
 
 from euclid import AUTH_SIGNATURE, Euclid, EuclidServiceError, Variant, parse_bucket_event
 from euclid.modules import esm as esm_module
+from euclid.dto.esm import LifecycleRule
 from fake_storage import FakeStorage, bucket_ern
 from test_eam import prepared
 
@@ -775,3 +776,161 @@ def test_a_key_that_would_escape_the_target_directory_is_skipped(gateway, esm, s
 
     assert written == {}
     assert not (tmp_path / "escaped").exists()
+
+
+# -- lifecycle, versioning and verification -------------------------------------------------------
+
+
+def test_stopping_a_bucket_refuses_writes_without_hiding_what_it_holds(gateway, esm):
+    gateway.answer("esm", "stop-bucket", {"ern": BUCKET, "name": "reports", "stopped": True})
+    gateway.answer("esm", "start-bucket", {"ern": BUCKET, "name": "reports", "stopped": False})
+
+    assert esm.stop_bucket(BUCKET).stopped is True
+    assert gateway.last().json() == {"ern": BUCKET}
+    assert esm.start_bucket(BUCKET).stopped is False
+
+
+def test_versioning_keeps_what_an_overwrite_replaced(gateway, esm):
+    gateway.answer("esm", "set-bucket-versioning", {"ern": BUCKET, "name": "reports",
+                                                    "versioning": True})
+    gateway.answer("esm", "list-object-versions", {
+        "bucketErn": BUCKET, "key": "q3.pdf", "versioning": True, "total": 2, "versions": [
+            {"versionId": "v2", "latest": True, "size": 200, "modified": "2026-11-02"},
+            {"versionId": "v1", "latest": False, "size": 100, "modified": "2026-11-01"}]})
+
+    assert esm.set_bucket_versioning(BUCKET).versioning is True
+    assert gateway.last().json() == {"ern": BUCKET, "enabled": True}
+
+    versions = esm.list_object_versions(BUCKET, "q3.pdf")
+    assert gateway.last().json() == {"bucketErn": BUCKET, "key": "q3.pdf"}
+    assert [v.version_id for v in versions.versions] == ["v2", "v1"]
+    assert versions.versions[0].latest and not versions.versions[1].latest
+
+
+def test_a_bucket_that_never_kept_versions_has_one_per_key(gateway, esm):
+    """Which is what the result's own versioning flag explains."""
+    gateway.answer("esm", "list-object-versions", {
+        "bucketErn": BUCKET, "key": "q3.pdf", "versioning": False, "total": 1,
+        "versions": [{"versionId": "", "latest": True, "size": 100}]})
+
+    result = esm.list_object_versions(BUCKET, "q3.pdf")
+
+    assert result.versioning is False and result.total == 1
+
+
+def test_lifecycle_rules_replace_rather_than_merge(gateway, esm):
+    """A rule left out is taken away, which is the only way to remove one short of deleting them
+    all."""
+    gateway.answer("esm", "set-bucket-lifecycle", {"ern": BUCKET, "name": "reports", "rules": [
+        {"id": "cold", "prefix": "2025/", "archiveAfterDays": 90, "restoreDays": 7,
+         "enabled": True}]})
+
+    result = esm.set_bucket_lifecycle(BUCKET, [
+        LifecycleRule("cold", "2025/", archive_after_days=90, restore_days=7)])
+
+    assert gateway.last().json() == {"ern": BUCKET, "rules": [
+        {"id": "cold", "prefix": "2025/", "archiveAfterDays": 90, "restoreDays": 7,
+         "enabled": True}]}
+    assert result.rules[0].archive_after_days == 90
+
+
+def test_a_lifecycle_rule_without_an_id_says_so_before_the_round_trip(gateway, esm):
+    """The ids are how a rule is named in an answer, so two with none cannot be told apart."""
+    with pytest.raises(ValueError, match="needs an id"):
+        esm.set_bucket_lifecycle(BUCKET, [LifecycleRule(prefix="2025/", archive_after_days=90)])
+
+    assert [r for r in gateway.requests if r.action == "set-bucket-lifecycle"] == []
+
+
+def test_reading_and_deleting_a_buckets_lifecycle(gateway, esm):
+    gateway.answer("esm", "get-bucket-lifecycle", {"ern": BUCKET, "name": "reports", "rules": []})
+    gateway.answer("esm", "delete-bucket-lifecycle", {"ern": BUCKET, "name": "reports",
+                                                      "rules": []})
+
+    assert esm.get_bucket_lifecycle(BUCKET).rules == []
+    assert esm.delete_bucket_lifecycle(BUCKET).rules == []
+    assert gateway.last().json() == {"ern": BUCKET}
+
+
+def test_archiving_and_restoring_one_object(gateway, esm):
+    gateway.answer("esm", "archive-object", {"ern": "o-1", "bucketErn": BUCKET, "key": "q3.pdf",
+                                             "lifecycleState": "ARCHIVED",
+                                             "archivedAt": "2026-11-06T09:00:00Z",
+                                             "archiveFile": "cold/q3.pdf"})
+    gateway.answer("esm", "restore-object", {"ern": "o-1", "bucketErn": BUCKET, "key": "q3.pdf",
+                                             "lifecycleState": "STANDARD",
+                                             "restoredUntil": "2026-11-13T09:00:00Z"})
+
+    archived = esm.archive_object(bucket_ern=BUCKET, key="q3.pdf", days=7)
+    assert gateway.last().json() == {"bucketErn": BUCKET, "key": "q3.pdf", "days": 7}
+    assert archived.is_archived and archived.archive_file == "cold/q3.pdf"
+
+    # A restore is temporary, and restored_until is when it runs out.
+    restored = esm.restore_object(ern="o-1")
+    assert gateway.last().json() == {"ern": "o-1"}
+    assert not restored.is_archived
+    assert restored.restored_until == "2026-11-13T09:00:00Z"
+
+
+def test_an_object_has_to_be_named_one_way_or_the_other(gateway, esm):
+    """Naming it twice over is a mistake in the calling code, and the round trip adds nothing to
+    finding it."""
+    for call in (esm.archive_object, esm.restore_object):
+        with pytest.raises(ValueError, match="either by ern"):
+            call()
+        with pytest.raises(ValueError, match="either by ern"):
+            call(ern="o-1", bucket_ern=BUCKET, key="q3.pdf")
+
+    with pytest.raises(ValueError, match="either by ern"):
+        esm.get_object_size()
+
+
+def test_an_archive_window_outside_what_the_server_takes(gateway, esm):
+    with pytest.raises(ValueError, match="between 0 and 36500"):
+        esm.archive_object(ern="o-1", days=36501)
+
+
+def test_an_objects_size_without_fetching_it(gateway, esm):
+    gateway.answer("esm", "get-object-size", {"ern": "o-1", "bucketErn": BUCKET, "key": "q3.pdf",
+                                              "size": 2048})
+
+    assert esm.get_object_size(bucket_ern=BUCKET, key="q3.pdf") == 2048
+    assert gateway.last().json() == {"bucketErn": BUCKET, "key": "q3.pdf"}
+
+
+def test_verifying_a_bucket_is_paged_and_says_where_to_resume(gateway, esm):
+    """The check opens a file per object, so walking a large bucket is paid for a page at a time."""
+    gateway.answer("esm", "verify-objects", {
+        "bucketErn": BUCKET, "afterKey": "", "scanned": 2, "checked": 1, "skipped": 1,
+        "nextKey": "q3.pdf", "problems": [
+            {"key": "q2.pdf", "ern": "o-2", "problem": "size-mismatch", "recordedSize": 100,
+             "fileSize": 90, "expectedFileSize": 100, "detail": "short file"}]})
+
+    page = esm.verify_objects(BUCKET)
+
+    assert gateway.last().json() == {"bucketErn": BUCKET, "afterKey": "", "limit": 1000}
+    # Skipped is not a failure: an archived object has no file where one is expected.
+    assert (page.scanned, page.checked, page.skipped) == (2, 1, 1)
+    assert page.problems[0].problem == "size-mismatch"
+    assert (page.problems[0].file_size, page.problems[0].recorded_size) == (90, 100)
+    assert page.problems[0].detail == "short file"
+    assert page.next_key == "q3.pdf"
+
+
+def test_a_verify_limit_outside_the_servers_range(gateway, esm):
+    for refused in (0, 100001):
+        with pytest.raises(ValueError, match="between 1 and 100000"):
+            esm.verify_objects(BUCKET, limit=refused)
+
+
+def test_a_bucket_and_an_object_carry_the_new_fields(gateway, esm):
+    gateway.answer("esm", "get-bucket", {"bucket": {"name": "reports", "ern": BUCKET,
+                                                    "stopped": True, "versioning": True}})
+    gateway.answer("esm", "list-objects", {"total": 1, "objects": [
+        {"key": "q3.pdf", "ern": "o-1", "versionId": "v2", "lifecycleState": "ARCHIVED"}]})
+
+    bucket = esm.get_bucket(BUCKET)
+    assert bucket.stopped and bucket.versioning
+
+    stored = esm.list_objects(BUCKET).objects[0]
+    assert (stored.version_id, stored.lifecycle_state) == ("v2", "ARCHIVED")

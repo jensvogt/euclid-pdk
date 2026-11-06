@@ -198,6 +198,7 @@ credentials file; the retry then has a fresh token to use.
 | Method | Action |
 | --- | --- |
 | `list_users`, `get_user`, `register`, `delete_user`, `change_userid` | users |
+| `change_email`, `list_my_accounts` | a user's address; the accounts this session may work in |
 | `change_password`, `reset_password` | your own password, given the current one; or somebody else's, as an administrator |
 | `create_access_key`, `list_access_keys`, `delete_access_key` | the caller's own signing credentials |
 | `create_user_group`, `list_user_groups`, `get_user_group`, `delete_user_group`, `add_user_to_user_group`, `remove_user_from_user_group` | groups |
@@ -282,6 +283,11 @@ connection.
 | `enable_encryption`, `disable_encryption` | encryption at rest, under an EKM key |
 | `put_object`, `get_object`, `upload_file`, `download_file`, `abort_upload` | an object's bytes |
 | `upload_directory`, `download_bucket` | a local directory tree, one object per file |
+| `get_object_size`, `verify_objects` | one object's size; checking a bucket's bytes against its rows |
+| `stop_bucket`, `start_bucket` | refusing writes without hiding what is stored |
+| `set_bucket_versioning`, `list_object_versions` | keeping what an overwrite replaced |
+| `set_bucket_lifecycle`, `get_bucket_lifecycle`, `delete_bucket_lifecycle` | when objects are archived |
+| `archive_object`, `restore_object` | moving one object's bytes, on demand |
 | `list_objects`, `copy_object`, `move_object`, `rename_object` | objects |
 | `count_objects`, `get_object_count` | how many there are: counted exactly, or the bucket's stored running total |
 | `delete_object`, `delete_objects`, `purge_bucket` | deleting them |
@@ -296,6 +302,42 @@ part at a time rather than into memory; `download_file` tries a single request f
 to fetching parts when the server says the object is too large for one. Both retry a part that
 failed transiently - a 5xx, or a request that got no answer - four times before giving up, because
 a transfer is long and made of many steps and failing one of them throws away all the others.
+
+**Lifecycle, versioning and integrity.** Three things a bucket can now do that it could not
+before, and each has one asymmetry worth knowing.
+
+```python
+from euclid.dto.esm import LifecycleRule
+
+esm.set_bucket_versioning(bucket_ern)                    # an overwrite keeps the old version
+esm.list_object_versions(bucket_ern, "q3.pdf")
+
+esm.set_bucket_lifecycle(bucket_ern, [
+    LifecycleRule("cold", prefix="2025/", archive_after_days=90, restore_days=7)])
+
+esm.archive_object(bucket_ern=bucket_ern, key="q3.pdf")  # now, rather than on the sweep
+esm.restore_object(bucket_ern=bucket_ern, key="q3.pdf", days=7)
+```
+
+Versioning applies to writes from here on: turning it on recovers nothing already overwritten, and
+turning it off deletes none of the versions already kept — what it stops is new ones being made. A
+listing's `versioning` flag is the bucket's rather than the key's, which is what explains a single
+version coming back.
+
+Lifecycle rules **replace** rather than merge, and where several match a key the longest prefix
+wins, so a general rule can be given an exception without being rewritten. `delete_bucket_lifecycle`
+removes the rules and leaves the bytes where they are — objects already archived stay archived, and
+`restore_object` is what brings one back. A restore is *temporary*: `restored_until` is when it
+expires, and a reader needing longer asks for more days rather than assuming the first restore holds.
+
+`stop_bucket` refuses writes without hiding what is stored, which is what taking a bucket out of use
+before deleting it wants — a refusal is a producer that retries, where a deleted bucket is one that
+fails for good.
+
+`verify_objects` checks that a page of objects still have the bytes their rows describe. It is paged
+deliberately, because it opens a file per object; `next_key` is where the next call resumes and an
+empty one is the end. `skipped` is not a failure — an archived object has no file where one is
+expected, which is exactly where its bytes are supposed to be.
 
 `upload_directory` and `download_bucket` are the same two a file at a time, and are entirely
 client-side: a bucket has no directories, only keys that share a prefix. Each object's key is the
@@ -341,6 +383,7 @@ token quietly, and hashing raw bytes is exact here in a way it is not in every l
 | `add_queue_tag`, `set_queue_tag`, `delete_queue_tag` | queue tags |
 | `stop_queue`, `start_queue`, `set_queue_visibility`, `purge_queue`, `purge_all_queues` | what a queue does |
 | `set_queue_delay`, `set_queue_max_message_length` | how long a send is held back, and how large it may be |
+| `set_queue_max_retries` | how often a message may be received before the dead letter queue |
 | `send_message`, `receive_messages`, `receive_all_messages`, `delete_message`, `delete_message_by_id` | messages |
 | `list_messages`, `get_message_count`, `get_message_metadata`, `set_message_visibility` | inspecting them |
 | `get_message_attribute`, `set_message_attribute` | message attributes |
@@ -681,6 +724,9 @@ through.
 | `copy_application`, `scale_application`, `restart_application` | moving, sizing and cycling one |
 | `apply_infrastructure` | the resources an application declares it needs |
 | `list_nodes`, `get_node`, `drain_node`, `delete_node` | the hosts instances are placed on |
+| `set_application_limits`, `rebalance_application` | memory and CPU caps; placing a pool again |
+| `plan_infrastructure`, `get_platform`, `list_platforms` | a dry run, and a namespace's own declaration |
+| `list_egress_sites`, `set_egress_limit`, `delete_egress_limit`, `delete_egress_site` | how fast it may call out |
 | `set_log_level`, `reset_log_level` | what one application logs at |
 | `metrics` | EAP's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
@@ -754,6 +800,51 @@ because there it is the instruction to *unschedule*. And a schedule without `typ
 setting that would never fire. The server refuses a type it does not recognise rather than reading
 it as `PROCESS`: `"job"` in the wrong case would otherwise deploy something that never stops.
 
+### Limits, platforms and egress
+
+**The two resource caps fail differently, and that is the point.** `set_application_limits` enforces
+memory with cgroups, so an instance over its share is killed — a pool that restarts rather than a
+host that runs out of memory and takes every other application with it. CPU throttles instead: an
+instance over its share runs slowly and keeps running. Both take effect as instances are replaced,
+since a cgroup is set when a process is placed into it, so `restart_application` is what applies one
+now. `create_application` and `update_application` take them too, and leave them out of the request
+when uncapped.
+
+`rebalance_application` places a pool's instances again across the nodes as they now are — what a
+pool wants after a node joins or is drained, since the instances were placed against the nodes that
+existed when they started and nothing moves them on its own. Like a restart it is a request rather
+than an act, and like a restart it cycles the instances.
+
+`plan_infrastructure` is `apply_infrastructure` with nothing written. The `deleted` list is the half
+worth reading, and reading it *before* the apply is the whole point: a reconcile is full, so a
+resource the application created and the declaration no longer names is removed, taking a queue's
+messages or a bucket's objects with it.
+
+`get_platform` and `list_platforms` read a *namespace's* declaration rather than one application's —
+the queues, topics and buckets several applications share. `owns` is what that declaration is
+answerable for, and is what a later apply compares against.
+
+**Egress limits bound three different things**, which is why there are three numbers:
+`requests_per_second` is the sustained rate, `burst` how far above it a short spike may go, and
+`concurrent` how many calls may be in flight at once — the one a slow site needs even when the rate
+is modest.
+
+```python
+from euclid.modules.eap import EVERY_SITE
+
+eap.set_egress_limit("order-service", "api.example.com", requests_per_second=10, concurrent=2)
+eap.set_egress_limit("order-service", EVERY_SITE, concurrent=20)
+
+sites = eap.list_egress_sites("order-service")
+sites.default_limits          # what a site with limits_set False is held to
+```
+
+A site appears in the listing once the application has called it, so it is a record of what was
+reached rather than a list somebody wrote. `limits_set` is what separates a site with limits of its
+own from one under the default — the numbers read the same either way. `delete_egress_limit` puts a
+site back under the default and leaves it listed; `delete_egress_site` forgets the entry, and a site
+the application calls again simply reappears.
+
 ### Nodes
 
 A node is a host that has registered itself as somewhere euclid may place instances. Nothing
@@ -801,6 +892,7 @@ it regardless.
 | Method | Action |
 | --- | --- |
 | `create_route`, `create_module_route`, `get_route`, `list_routes`, `delete_route` | routes |
+| `timeout=` on a create or update | how long the gateway waits for this route's target |
 | `update_route`, `set_route_active` | changing one |
 | `list_listeners` | the ports the gateway answers on, and whether it is answering |
 | `metrics` | EAG's own metrics |
@@ -940,6 +1032,9 @@ upload through. A refused client is never told why — it gets `550 Permission d
 | --- | --- |
 | `push_metrics` | adding an application's own measurements to the installation's |
 | `list_metrics`, `average` | reading them back |
+| `describe_metrics` | the catalogue: which series exist, and what labels split them |
+| `create_alert_rule`, `update_alert_rule`, `delete_alert_rule`, `list_alert_rules` | thresholds |
+| `list_alerts`, `list_alert_history` | where each one stands, and what it has been through |
 | `registry` | a `MeterRegistry` publishing through this client |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
@@ -967,6 +1062,42 @@ numbers without special rights, and reading everybody's is a different question.
 leaves out every field it does not narrow by, since the server reads an absent field as "do not
 narrow by this" and an empty string as a name that matches nothing. Note `since`/`until` rather than
 the wire's `from`/`to` — `from` is a Python keyword and could not be a field name here.
+
+### Alerting
+
+`describe_metrics()` is the catalogue — which series exist, how each is rolled up, and which labels
+split it — which is what you need before a rule can name a threshold. It is to `list_metrics` what a
+schema is to a table. (The two names are one letter apart on the wire, `list-metrics` and `list`;
+`describe_` here only because `list_metrics` was already taken by the one that reads rows.)
+
+```python
+from euclid.dto.emo import ABOVE, MAX, AlertRule
+
+emo.create_alert_rule(AlertRule(
+    rule_id="queue-backlog", name="eqs.messages.available", labels={"queue": "orders"},
+    statistic=MAX, comparison=ABOVE, warning=1000, critical=10000,
+    for_periods=3, clear_periods=2))
+
+for alert in emo.list_alerts(active_only=True):
+    print(alert.rule_id, alert.labels, alert.state, alert.value, alert.since)
+```
+
+`warning` and `critical` are both optional and a rule may carry either or both — a rule with only a
+critical threshold is one nobody wants a warning about. `None` means "no threshold at this level",
+and is kept distinct from `0`, which is a threshold somebody may well mean: a rate that should never
+drop to nothing. A rule with neither raises `ValueError` here, since it could never fire;
+`enabled=False` is how a rule is suspended.
+
+The three period counts are what keep one bad sample from paging somebody: `for_periods` is how many
+consecutive intervals must breach before it fires, `clear_periods` how many must be clean before it
+clears, and `no_data_after_periods` how many empty intervals read as `NODATA` rather than as calm —
+zero meaning a series that stops reporting is simply quiet. **`NODATA` counts as firing**
+(`Alert.is_firing`), because a series nobody is sending is not a series that is healthy.
+
+`list_alerts` answers one entry per label combination per rule, not per rule, which is the
+granularity an alert actually fires at. `list_alert_history` is the transitions rather than the
+states — `OK` to `CRITICAL` is a page and the reverse is the all-clear — and is where "how long was
+it broken" is answered after the fact, since `list_alerts` only knows about now.
 
 ### Measuring rather than pushing
 

@@ -251,6 +251,27 @@ class EuclidEqs(ModuleClient):
             raise ValueError(f"delay must be between 0 and {MAX_DELAY} seconds")
         return self._number("set-queue-delay", {"ern": ern, "delay": delay}, "delay")
 
+    def set_queue_max_retries(self, ern: str, max_retries: int) -> int:
+        """Changes how many times a message may be received before it goes to the dead letter
+        queue, and returns the count the queue now has.
+
+        Counts receives rather than failures: a consumer that takes a message and dies without
+        deleting it has used one, which is the point - the count is there to catch a message
+        nothing can process, and a consumer crashing on it is exactly that.
+
+        Applies to what is on the queue as well as what arrives: the count lives on the queue and
+        each message carries how often it has been received, so lowering it can send a message that
+        has already been round several times to the dead letter queue on its next receive.
+
+        :param max_retries: 1 to 1000.
+        :raises ValueError: if the count is outside that range, which the server refuses anyway -
+            this just says so before the round trip.
+        """
+        if not 1 <= max_retries <= 1000:
+            raise ValueError("max_retries must be between 1 and 1000")
+        return self._number("set-queue-max-retries", {"ern": ern, "maxRetries": max_retries},
+                            "maxRetries")
+
     def set_queue_max_message_length(self, ern: str,
                                      max_message_length: int) -> QueueMaxMessageLengthResult:
         """Changes the largest message this queue accepts, and returns both limits it now has.

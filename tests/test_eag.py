@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from euclid import Euclid, EuclidServiceError
-from euclid.modules.eag import BASIC_AUTH, EUCLID_AUTH, HTTPS, NO_AUTH
+from euclid.modules.eag import BASIC_AUTH, EUCLID_AUTH, HTTPS, MAX_ROUTE_TIMEOUT, NO_AUTH
 from test_eam import prepared
 
 ROUTE = {"routeId": "orders", "ern": "ern:eag:route/orders", "accountId": "000000000000",
@@ -280,3 +280,38 @@ def test_metrics_and_call(gateway, eag):
     assert eag.metrics() == {"items": [{"name": "eag-requests", "value": 3}]}
     assert eag.call("some-future-action", {"x": 1}) == {"ok": True}
     assert gateway.last().json() == {"x": 1}
+
+
+def test_a_route_can_be_given_its_own_timeout(gateway, eag):
+    """Zero follows the gateway's own setting as that changes, rather than freezing a copy."""
+    gateway.answer("eag", "create-route", {"routeId": "orders", "path": "/api/orders",
+                                           "timeout": 300})
+    gateway.answer("eag", "update-route", {"routeId": "orders", "timeout": 0})
+
+    assert eag.create_route("orders", "/api/orders", "order-service", timeout=300).timeout == 300
+    assert gateway.last().json()["timeout"] == 300
+
+    # Sent even as zero on an update, because there zero is the instruction to go back to the
+    # default rather than "nothing to say".
+    assert eag.update_route("orders", timeout=0).timeout == 0
+    assert gateway.last().json() == {"routeId": "orders", "timeout": 0}
+
+
+def test_a_route_with_no_timeout_sends_none(gateway, eag):
+    gateway.answer("eag", "create-route", {"routeId": "orders", "path": "/api/orders"})
+
+    eag.create_route("orders", "/api/orders", "order-service")
+
+    assert "timeout" not in gateway.last().json()
+
+
+def test_a_timeout_past_an_hour_says_so_before_the_round_trip(gateway, eag):
+    """Past that a request is a job: it ties up a connection to the caller and one to the instance
+    for all of it. Refused rather than clamped, as the server refuses it."""
+    with pytest.raises(ValueError, match="between 0 and 3600"):
+        eag.create_route("orders", "/api/orders", "order-service", timeout=MAX_ROUTE_TIMEOUT + 1)
+
+    with pytest.raises(ValueError, match="between 0 and 3600"):
+        eag.update_route("orders", timeout=-1)
+
+    assert [r for r in gateway.requests if r.target == "eag"] == []

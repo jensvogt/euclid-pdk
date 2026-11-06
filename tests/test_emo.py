@@ -19,7 +19,8 @@ import threading
 import pytest
 
 from euclid import Euclid, EuclidServiceError
-from euclid.dto.emo import DAY, GAUGE, HOUR, RATE, STORED_RATE, Metric, MetricQuery
+from euclid.dto.emo import (ABOVE, BELOW, CRITICAL, DAY, GAUGE, HOUR, MAX, OK, RATE,
+                            STORED_RATE, AlertRule, Metric, MetricQuery)
 from euclid.modules.emo import MeterRegistry
 from test_eam import prepared
 
@@ -360,3 +361,119 @@ def test_a_registry_built_by_hand_is_the_same_thing(gateway, emo):
         registry.publish()
 
     assert gateway.last().json()["module"] == "invoice-parser"
+
+
+# -- the catalogue and alerting -------------------------------------------------------------------
+
+
+def test_describing_the_metrics_is_the_schema_not_the_data(gateway, emo):
+    """What exists, how it is rolled up and which labels split it - what somebody needs before an
+    alert rule can name a threshold."""
+    gateway.answer("emo", "list-metrics", {"total": 2, "items": [
+        {"name": "invoices.parsed", "type": "RATE", "series": 4,
+         "labelNames": ["host", "outcome"], "lastSeen": "2026-11-06T09:00:00Z"},
+        {"name": "queue.depth"}]})
+
+    result = emo.describe_metrics(prefix="invoices", hours=72)
+
+    assert gateway.last().json() == {"prefix": "invoices", "hours": 72}
+    assert result.total == 2
+    assert result.items[0].label_names == ["host", "outcome"]
+    assert result.items[0].series == 4
+    # A field the server did not send reads as empty rather than raising.
+    assert (result.items[1].type, result.items[1].label_names) == ("", [])
+
+
+def test_a_catalogue_window_of_less_than_an_hour_says_so_first(gateway, emo):
+    with pytest.raises(ValueError, match="at least 1"):
+        emo.describe_metrics(hours=0)
+
+    assert [r for r in gateway.requests if r.action == "list-metrics"] == []
+
+
+def test_creating_an_alert_rule(gateway, emo):
+    gateway.answer("emo", "create-alert-rule", {
+        "ruleId": "queue-backlog", "name": "eqs.messages.available", "labels": {"queue": "orders"},
+        "statistic": "MAX", "comparison": "ABOVE", "warning": 1000.0, "critical": 10000.0,
+        "forPeriods": 3, "clearPeriods": 2, "noDataAfterPeriods": 0, "enabled": True})
+
+    rule = emo.create_alert_rule(AlertRule(
+        rule_id="queue-backlog", name="eqs.messages.available", labels={"queue": "orders"},
+        statistic=MAX, comparison=ABOVE, warning=1000, critical=10000,
+        for_periods=3, clear_periods=2))
+
+    sent = gateway.last().json()
+    assert sent["ruleId"] == "queue-backlog" and sent["statistic"] == "MAX"
+    assert (sent["warning"], sent["critical"]) == (1000, 10000)
+    assert sent["forPeriods"] == 3
+    assert (rule.warning, rule.critical) == (1000.0, 10000.0)
+
+
+def test_a_rule_with_no_threshold_can_never_fire_and_is_refused_here(gateway, emo):
+    """enabled=False is how a rule is suspended; no threshold at all is a mistake."""
+    with pytest.raises(ValueError, match="can never fire"):
+        emo.create_alert_rule(AlertRule(rule_id="r", name="m"))
+
+    with pytest.raises(ValueError, match="needs a rule_id"):
+        emo.create_alert_rule(AlertRule(name="m", warning=1))
+
+    assert [r for r in gateway.requests if r.action == "create-alert-rule"] == []
+
+
+def test_a_threshold_of_zero_is_a_threshold(gateway, emo):
+    """Which is why None and 0 have to stay apart: a rate that should never drop to nothing is a
+    rule somebody means."""
+    gateway.answer("emo", "create-alert-rule", {"ruleId": "idle", "critical": 0.0})
+
+    rule = emo.create_alert_rule(AlertRule(rule_id="idle", name="orders.placed",
+                                           comparison=BELOW, critical=0))
+
+    sent = gateway.last().json()
+    assert sent["critical"] == 0 and "warning" not in sent
+    assert rule.critical == 0.0 and rule.warning is None
+
+
+def test_updating_and_deleting_an_alert_rule(gateway, emo):
+    gateway.answer("emo", "update-alert-rule", {"ruleId": "queue-backlog", "warning": 2000.0})
+    gateway.answer("emo", "delete-alert-rule", {})
+
+    assert emo.update_alert_rule(AlertRule(rule_id="queue-backlog", name="m",
+                                           warning=2000)).warning == 2000.0
+    emo.delete_alert_rule("queue-backlog")
+    assert gateway.last().json() == {"ruleId": "queue-backlog"}
+
+
+def test_listing_rules_alerts_and_the_history(gateway, emo):
+    gateway.answer("emo", "list-alert-rules", {"items": [
+        {"ruleId": "queue-backlog", "name": "eqs.messages.available", "warning": 1000.0}]})
+    gateway.answer("emo", "list-alerts", {"items": [
+        {"ruleId": "queue-backlog", "labels": {"queue": "orders"}, "state": "CRITICAL",
+         "severity": 2, "since": "2026-11-06T08:00:00Z", "value": 12000.0, "critical": 10000.0}]})
+    gateway.answer("emo", "list-alert-history", {"items": [
+        {"ruleId": "queue-backlog", "previous": "OK", "state": "CRITICAL", "value": 12000.0,
+         "threshold": 10000.0, "reason": "above critical for 3 periods",
+         "timestamp": "2026-11-06T08:00:00Z"}]})
+
+    assert emo.list_alert_rules()[0].rule_id == "queue-backlog"
+    assert gateway.last().json() == {}
+
+    alerts = emo.list_alerts(active_only=True)
+    assert gateway.last().json() == {"active": True}
+    # One entry per label combination per rule, which is the granularity an alert fires at.
+    assert alerts[0].labels == {"queue": "orders"}
+    assert alerts[0].state == CRITICAL and alerts[0].is_firing
+    assert alerts[0].value == 12000.0
+
+    history = emo.list_alert_history(limit=50)
+    assert gateway.last().json() == {"limit": 50}
+    assert (history[0].previous, history[0].state) == (OK, CRITICAL)
+    assert history[0].threshold == 10000.0
+
+
+def test_nodata_is_firing_because_a_silent_series_is_not_a_healthy_one(gateway, emo):
+    gateway.answer("emo", "list-alerts", {"items": [
+        {"ruleId": "r", "state": "NODATA"}, {"ruleId": "r2", "state": "OK"}]})
+
+    alerts = emo.list_alerts()
+
+    assert [a.is_firing for a in alerts] == [True, False]

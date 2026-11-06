@@ -15,7 +15,7 @@ import pytest
 
 from euclid import Euclid, EuclidServiceError
 from euclid.dto.ekv import CREATED_ATTRIBUTE, MODIFIED_ATTRIBUTE, Item
-from euclid.modules.ekv import BEGINS_WITH, BETWEEN, GE, NUMBER, WHOLE_PARTITION
+from euclid.modules.ekv import BEGINS_WITH, BETWEEN, EQ, GE, NUMBER, WHOLE_PARTITION
 from fake_gateway import RecordedRequest
 from test_eam import prepared
 
@@ -340,3 +340,36 @@ def test_an_item_reads_like_a_mapping():
     assert "userId" in item and "nothing" not in item
     assert sorted(item) == ["host", "userId"]
     assert item.get("nothing", "fallback") == "fallback"
+
+
+def test_a_scan_can_be_sorted_and_filtered(gateway, ekv):
+    """The filters narrow what comes back but not what is read: a scan walks the table whatever
+    they say."""
+    gateway.answer("ekv", "scan", {"items": [], "total": 0})
+
+    ekv.scan("sessions", page_size=50, sort_column="modified", sort_direction="desc",
+             modified_from="2026-11-01T00:00:00Z", modified_to="2026-11-06T00:00:00Z",
+             attribute_name="status", attribute_operator=EQ, attribute_value="active")
+
+    assert gateway.last().json() == {
+        "table": "sessions", "pageSize": 50, "pageIndex": 0,
+        "sortColumn": "modified", "sortDirection": "desc",
+        "modifiedFrom": "2026-11-01T00:00:00Z", "modifiedTo": "2026-11-06T00:00:00Z",
+        "attributeName": "status", "attributeOperator": "eq", "attributeValue": "active"}
+
+
+def test_a_scan_that_narrows_by_nothing_sends_nothing_extra(gateway, ekv):
+    gateway.answer("ekv", "scan", {"items": [], "total": 0})
+
+    ekv.scan("sessions")
+
+    assert gateway.last().json() == {"table": "sessions", "pageSize": 0, "pageIndex": 0}
+
+
+def test_naming_an_attribute_without_an_operator_tests_equality(gateway, ekv):
+    """The condition almost always meant."""
+    gateway.answer("ekv", "scan", {"items": [], "total": 0})
+
+    ekv.scan("sessions", attribute_name="status", attribute_value="active")
+
+    assert gateway.last().json()["attributeOperator"] == EQ

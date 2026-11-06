@@ -26,12 +26,14 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..dto.eap import (Application, InfrastructureResult, ListNodesResult, LogLevelResult, Node,
-                       NodeStateResult, RestartResult)
+from ..dto.eap import (Application, EgressSite, EgressSiteRemoved, EgressSitesResult,
+                       InfrastructureResult,
+                       ListNodesResult, LogLevelResult, Node, NodeStateResult, Platform,
+                       RebalanceResult, RestartResult)
 from .base import ModuleClient
 
 __all__ = ["EuclidEap", "TARGET", "JAVA", "JAVA21", "JAVA25", "PYTHON", "NODEJS", "BINARY",
-           "PROCESS", "JOB",
+           "RUST", "PROCESS", "JOB", "EVERY_SITE", "DEFAULT_PLATFORM",
            "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "OFF",
            "DEFAULT_MIN_INSTANCES", "DEFAULT_MAX_INSTANCES", "DEFAULT_READY_TIMEOUT_MS"]
 
@@ -63,6 +65,17 @@ JOB = "JOB"
 JAVA = "JAVA"
 JAVA21 = "JAVA21"
 JAVA25 = "JAVA25"
+
+#: A compiled Rust binary, started directly as :data:`BINARY` is - named separately so that a
+#: listing can say what an application is rather than only that it is a binary.
+RUST = "RUST"
+
+#: What an egress limit means by "every site this application calls", rather than one host.
+EVERY_SITE = "*"
+
+#: The platform declaration a namespace has unless another is named - see
+#: :meth:`EuclidEap.get_platform`.
+DEFAULT_PLATFORM = "platform"
 PYTHON = "PYTHON"
 NODEJS = "NODEJS"
 #: Anything already executable, which is where C++ and Rust applications land.
@@ -105,7 +118,8 @@ class EuclidEap(ModuleClient):
                            min_instances: int = DEFAULT_MIN_INSTANCES,
                            max_instances: int = DEFAULT_MAX_INSTANCES,
                            ready_timeout_ms: int = DEFAULT_READY_TIMEOUT_MS,
-                           type: str = "", schedule: str = "") -> Application:
+                           type: str = "", schedule: str = "",
+                           memory_limit_mb: int = 0, cpu_limit: float = 0.0) -> Application:
         """Deploys an application, stopped, and returns it as it was stored.
 
         Nothing runs yet: a new application's desired state is ``STOPPED``, so
@@ -118,7 +132,7 @@ class EuclidEap(ModuleClient):
         rather than across the installation: two namespaces may each deploy a "billing".
 
         :param runtime: :data:`JAVA`, :data:`JAVA21`, :data:`JAVA25`, :data:`PYTHON`,
-            :data:`NODEJS` or :data:`BINARY`.
+            :data:`NODEJS`, :data:`RUST` or :data:`BINARY`.
         :param bucket: the name of the bucket holding the artifact - a name, not an ERN.
         :param artifact: the artifact's object key within that bucket.
         :param version: what to record as the deployed version. Left empty, the server reads it out
@@ -141,6 +155,10 @@ class EuclidEap(ModuleClient):
             field it has no meaning for.
         :param schedule: a cron expression a :data:`JOB` runs on, in UTC - ``"0 2 * * *"``, or one
             of the ``@daily`` shorthands. Only meaningful on a job.
+        :param memory_limit_mb: MiB an instance may use; 0 leaves it uncapped. See
+            :meth:`set_application_limits` for how the two caps differ in what they do when
+            reached.
+        :param cpu_limit: CPUs an instance may use, fractional; 0 leaves it uncapped.
         :raises ValueError: if a schedule is given without ``type=JOB``, which the server refuses
             anyway - a schedule on a process is a setting that would never fire.
 
@@ -163,6 +181,12 @@ class EuclidEap(ModuleClient):
             payload["type"] = type
         if schedule:
             payload["schedule"] = schedule
+        # Left out when uncapped, for the same reason as the two above: the server already defaults
+        # both to nothing, and an installation older than cgroup limits should not be handed one.
+        if memory_limit_mb:
+            payload["memoryLimitMb"] = memory_limit_mb
+        if cpu_limit:
+            payload["cpuLimit"] = cpu_limit
         return self._application("create-application", payload)
 
     def update_application(self, application_id: str, runtime: str | None = None,
@@ -174,7 +198,9 @@ class EuclidEap(ModuleClient):
                            ready_timeout_ms: int | None = None,
                            namespace: str | None = None,
                            type: str | None = None,
-                           schedule: str | None = None) -> Application:
+                           schedule: str | None = None,
+                           memory_limit_mb: int | None = None,
+                           cpu_limit: float | None = None) -> Application:
         """Changes a deployed application. Only what this names changes.
 
         The distinction the server draws is between a field being sent and not being sent, rather
@@ -226,6 +252,10 @@ class EuclidEap(ModuleClient):
             payload["type"] = type
         if schedule is not None:
             payload["schedule"] = schedule
+        if memory_limit_mb is not None:
+            payload["memoryLimitMb"] = memory_limit_mb
+        if cpu_limit is not None:
+            payload["cpuLimit"] = cpu_limit
         return self._application("update-application", payload)
 
     def copy_application(self, application_id: str, target_namespace: str,
@@ -379,6 +409,130 @@ class EuclidEap(ModuleClient):
     def get_application(self, application_id: str) -> Application:
         """One application, by its ID, with the instances that are answering for it."""
         return self._application("get-application", {"applicationId": application_id})
+
+    def plan_infrastructure(self, application_id: str) -> InfrastructureResult:
+        """Says what :meth:`apply_infrastructure` would do, without doing any of it.
+
+        The same answer, from the same comparison, with nothing written - so ``deleted`` is the
+        half to read here. A reconcile is full: a resource this application created and the
+        declaration no longer names is removed, taking a queue's messages or a bucket's objects
+        with it. Seeing that list before the apply rather than after is the whole point.
+        """
+        return InfrastructureResult.from_json(self._call("plan-infrastructure",
+                                                         {"applicationId": application_id}))
+
+    def set_application_limits(self, application_id: str, memory_limit_mb: int | None = None,
+                               cpu_limit: float | None = None) -> Application:
+        """Caps how much memory and CPU each of an application's instances may use.
+
+        **The two caps fail differently, and that is the point.** Memory is enforced with cgroups,
+        so an instance that asks for more than its share is killed - which is a pool that restarts
+        rather than a host that runs out of memory and takes every other application with it. CPU
+        throttles instead: an instance over its share runs slowly and keeps running.
+
+        :param memory_limit_mb: MiB per instance; 0 removes the cap.
+        :param cpu_limit: CPUs per instance, fractional - ``1.5`` is one and a half; 0 removes it.
+        :raises ValueError: if neither is given. The server refuses that too: a call that changes
+            nothing is a call that meant something it did not say.
+
+        Takes effect as instances are replaced rather than at once, since a cgroup is set when a
+        process is placed into it - :meth:`restart_application` is what applies it now.
+        """
+        if memory_limit_mb is None and cpu_limit is None:
+            raise ValueError("give memory_limit_mb, cpu_limit or both; 0 removes a limit")
+        payload: dict[str, Any] = {"applicationId": application_id}
+        if memory_limit_mb is not None:
+            payload["memoryLimitMb"] = memory_limit_mb
+        if cpu_limit is not None:
+            payload["cpuLimit"] = cpu_limit
+        return self._application("set-application-limits", payload)
+
+    def rebalance_application(self, application_id: str) -> RebalanceResult:
+        """Asks for an application's instances to be placed again, across the nodes as they now are.
+
+        What a pool wants after a node joins or is drained: the instances were placed against the
+        nodes that existed when they started, and nothing moves them on its own. Like a restart
+        this is a request rather than an act - the manager does the moving on its next reconcile -
+        and like a restart it cycles the instances, so it is not free.
+        """
+        return RebalanceResult.from_json(self._call("rebalance-application",
+                                                    {"applicationId": application_id}))
+
+    # -- platforms ---------------------------------------------------------------------------
+
+    def get_platform(self, name: str = DEFAULT_PLATFORM) -> Platform:
+        """One stored platform declaration: what a namespace has, rather than what one application
+        needs.
+
+        Where :meth:`apply_infrastructure` applies the declaration an application carries, a
+        platform's covers the whole namespace - the queues, topics and buckets several applications
+        share. ``owns`` is what the declaration is answerable for, and is what a later apply
+        compares against: a resource it owns and no longer names is removed.
+        """
+        return Platform.from_json(self._call("get-platform", {"name": name}))
+
+    def list_platforms(self) -> list[Platform]:
+        """Every stored platform declaration in the account."""
+        platforms = self._call("list-platforms", {}).get("platforms")
+        return [Platform.from_json(p) for p in platforms] if isinstance(platforms, list) else []
+
+    # -- egress ------------------------------------------------------------------------------
+
+    def list_egress_sites(self, application_id: str = "") -> EgressSitesResult:
+        """The sites applications call out to, and the limits they are held to.
+
+        A site appears here once an application has called it, so this is a record of what was
+        reached rather than a list somebody wrote. ``limits_set`` on each entry says whether a
+        limit was chosen for it or it is running under the result's ``default_limits``.
+
+        :param application_id: one application's sites; empty lists every application's.
+        """
+        payload = {"applicationId": application_id} if application_id else {}
+        return EgressSitesResult.from_json(self._call("list-egress-sites", payload))
+
+    def set_egress_limit(self, application_id: str, site: str = EVERY_SITE,
+                         requests_per_second: int | None = None, burst: int | None = None,
+                         concurrent: int | None = None) -> EgressSite:
+        """Bounds how fast an application may call out to a site.
+
+        :param site: a host name, or :data:`EVERY_SITE` for all of the application's sites.
+        :param requests_per_second: the sustained rate.
+        :param burst: how far above that rate a short spike may go.
+        :param concurrent: how many calls may be in flight at once - the one a slow site needs
+            even when the rate is modest.
+        :raises ValueError: if none of the three is given, which the server refuses too.
+
+        Answered with HTTP 503 when the egress state is momentarily busy, which is a retry rather
+        than a failure.
+        """
+        if requests_per_second is None and burst is None and concurrent is None:
+            raise ValueError("give at least one of requests_per_second, burst or concurrent")
+        payload: dict[str, Any] = {"applicationId": application_id, "site": site}
+        if requests_per_second is not None:
+            payload["requestsPerSecond"] = requests_per_second
+        if burst is not None:
+            payload["burst"] = burst
+        if concurrent is not None:
+            payload["concurrent"] = concurrent
+        return EgressSite.from_json(self._call("set-egress-limit", payload))
+
+    def delete_egress_limit(self, application_id: str, site: str = EVERY_SITE) -> EgressSite:
+        """Takes away a site's own limit, putting it back under the default.
+
+        The site stays listed - it is still somewhere the application calls - and the limits in the
+        answer are the default's. :meth:`delete_egress_site` is what removes the entry itself.
+        """
+        return EgressSite.from_json(self._call("delete-egress-limit", {
+            "applicationId": application_id, "site": site}))
+
+    def delete_egress_site(self, application_id: str, site: str = EVERY_SITE) -> EgressSiteRemoved:
+        """Forgets a site an application called, and whatever limit it had.
+
+        The record is of what was reached, so this is housekeeping: a site the application calls
+        again simply reappears, under the default.
+        """
+        return EgressSiteRemoved.from_json(self._call("delete-egress-site", {
+            "applicationId": application_id, "site": site}))
 
     # -- nodes -------------------------------------------------------------------------------
 
